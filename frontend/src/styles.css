@@ -230,9 +230,9 @@ mark { background: var(--med-soft); color: var(--text); border-radius: 3px; padd
 .viz svg { display: block; }
 .viz text { fill: var(--text); font-family: inherit; }
 /* Kill map edge legend — sits below the SVG */
-.km-legend { display: flex; align-items: center; gap: 20px; padding: 10px 18px 12px; border-top: 1px solid var(--line); flex-wrap: wrap; }
-.km-legend svg { overflow: visible; }
-.km-legend text { fill: var(--muted); font-family: inherit; }
+.km-legend { display: flex; align-items: center; gap: 24px; padding: 12px 20px; border-top: 1px solid var(--line); flex-wrap: wrap; background: var(--panel2); }
+.km-legend svg { overflow: visible; flex-shrink: 0; }
+.km-leg-item { display: inline-flex; align-items: center; gap: 9px; font-size: 12px; color: var(--muted); }
 .svg-node { cursor: pointer; }
 .svg-node:hover .nbox { stroke-width: 2.5; }
 .svg-node.sel .nbox { stroke: var(--accent); stroke-width: 3; }
