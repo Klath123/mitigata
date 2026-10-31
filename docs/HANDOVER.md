@@ -11,7 +11,7 @@ Start here in a new session. Read with `README.md` (setup, pipeline by log famil
   queries without process telemetry, Sigma compile cache, cheaper memory sampler) · `5164377` incident formation
   (critical-asset escalation, `same_endpoint` links, firewall role) · `cdbf587` prevalence noise + admin-from-internet
   severity. Push only when the user says so.
-- Tests: `python -m pytest` → 43 pass (also under Python 3.11 on AWS).
+- Tests: `python -m pytest` → 44 pass (also under Python 3.11 on AWS).
 - SigmaHQ rules are not in git: `python -m engine.hunt.fetch_sigma` (windows, linux, network, web, cloud, identity).
 
 ## 2. The three benchmark machines
@@ -28,9 +28,11 @@ Hayabusa: GCP `/data/logs/bench/tools/hayabusa/hayabusa-4.3.1-lin-x64-gnu`; AWS 
 boxes, not the laptop (user preference).
 
 **Done:** GCP #1 synthetic check of `cdbf587` passed (`/data/logs/bench/out/phase6/summary.txt`, 2026-10-31 19:32Z).
-**Done:** big box hackathon rerun with `cdbf587` (351 s, peak 6.02 GB, 46 incidents: 2 attack + 44 review; see section 5).
-**Still running:** big box
-"before" baseline (old engine) still in correlation after 2.5 h+ (`tmux before`) — its point is that it never finishes.
+**Done:** big box hackathon rerun with `cdbf587` (351 s, peak 6.02 GB, **5 incidents: 2 attack + 3 review**; the
+earlier "44 review" was a misread, see section 5 item 6).
+**Still running (stop it):** big box "before" baseline (old engine, `tmux before`): still in correlation after 2 h 52 m
+at 9.07 GB RSS, i.e. over the 8 GB budget. That is the evidence it was meant to give. Stop it with
+`ssh -i ~/.ssh/gce-big.pem pater@34.85.120.251 'tmux kill-session -t before'`.
 
 ## 3. How to measure
 
@@ -69,14 +71,16 @@ Found so far:
 4. foreign admin logins: `deepika.khan` (Russia, ×3), `parul.sinha` (Türkiye), `svc_backup30` (service account, Ireland)
    — after `cdbf587`: parul.sinha and deepika.khan are review incidents (0.51); svc_backup30 not in the top 15 (check).
 5. 416 k failed admin logins (invalid user names, random IPs) — spray/noise, grouped.
-6. "scan → upload" on endpoints = artefact (flows sharing the last timestamp). **NOT fixed by `cdbf587`:** about 40
-   review incidents (score 0.481, `fw_port_scan` + `behav_endpoint_upload_spike`, one per 10.10.x.x endpoint) remain.
-   Next fix: find out why the prevalence rule didn't mark them noisy (check `hits.noisy` and rule stats in the run).
+6. "scan → upload" on endpoints = artefact (flows sharing the last timestamp). **Fixed by `cdbf587`** (both rules are
+   `prevalent` + `noisy`, so weak links are blocked). The ~40 review incidents at 0.481 were **stale files** in
+   `incidents/` from the 19:08 run: `results/store.write` never cleared the folder (now fixed, `tests/test_store.py`).
+   The stale files were moved to `/data/logs/bench/runs/firex_after_stale/`. Lesson: count incidents from `incidents.json`.
 Rules for these were written after seeing the file: not a blind measurement.
 
 ## 6. Next steps (agreed order)
 
-1. Fix the endpoint scan→upload review flood (section 5 item 6), rerun on the big box, then kill `tmux before` there.
+1. ~~Endpoint scan→upload review flood~~: not a real problem, it was stale files (section 5 item 6). Still to do:
+   stop `tmux before` on the big box (section 2).
 2. Rerun the **blind** set on AWS with the final code (`bash ~/round6.sh $HOME/bench blind <hayabusa-musl>`) — honest
    before/after for incident formation; check the small drops (Linux 10→7%, mix technique 83→80%).
 3. Write the **hackathon findings report** (timeline, evidence lines, what the logs cannot show) — as an Artifact.

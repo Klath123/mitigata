@@ -7,7 +7,11 @@ from itertools import chain
 
 
 def write(run_dir: str, summary: dict, incidents: list[dict], review: list[dict], stats: dict) -> None:
-    os.makedirs(os.path.join(run_dir, "incidents"), exist_ok=True)
+    d = os.path.join(run_dir, "incidents")
+    os.makedirs(d, exist_ok=True)
+    for fn in os.listdir(d):              # a rerun into the same --out must not leave the previous run's incidents
+        if fn.endswith(".json"):
+            os.remove(os.path.join(d, fn))
     for inc in incidents + review:
         with open(os.path.join(run_dir, "incidents", f"{inc['incident_id']}.json"), "w", encoding="utf-8") as f:
             json.dump(inc, f, default=str)
