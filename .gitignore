@@ -19,3 +19,9 @@ venv/
 Thumbs.db
 # secrets
 .env
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+# big downloads
+rules/attack/enterprise-attack.json
