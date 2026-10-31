@@ -105,7 +105,9 @@ def generate(out: str, size: int, seed: int, days: int, scenarios: list[str]) ->
 
     gt = {"dataset": os.path.basename(os.path.abspath(out)), "seed": seed, "days": days,
           "start": iso_z(START), "end": iso_z(end), "bytes": sink.bytes,
-          "lines": sum(sink.lines.values()), "attacks": []}
+          "lines": sum(sink.lines.values()), "attacks": [],
+          # benign lookalikes the engine must NOT pull into an incident
+          "decoys": {tag[1]: ev for tag, ev in gt_evidence.items() if tag[0] == "decoy"}}
     for at in attacks:
         steps = []
         for s in at.steps:

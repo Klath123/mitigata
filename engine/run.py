@@ -280,6 +280,7 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
         incidents, review, counts, reach_g = build_incidents(con, log=log, use_llm=use_llm)
         graph_info = graph_export.write(out, graph_export.build(incidents + review, reach_g))
         counts["export_graph"] = graph_info
+        counts["evidence_indexed"] = store.write_evidence_index(con, out, incidents + review)
         log(f"  graph export: {graph_info['nodes']} nodes, {graph_info['edges']} relationships -> graph/")
         stages["correlation_and_reports"] = round(time.time() - t, 2)
         con.close()

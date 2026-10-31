@@ -8,6 +8,18 @@ def _t(ts: int) -> str:
     return datetime.fromtimestamp(ts / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
+def _cover_hosts(steps: list[dict], path: list[str]) -> list[str]:
+    """First evidence on each host named in the summary, plus the first and last step."""
+    cites = [steps[0]["evidence"][0]]
+    for h in path:
+        s = next((x for x in steps if x["host"] == h), None)
+        if s and s["evidence"][0] not in cites:
+            cites.append(s["evidence"][0])
+    if steps[-1]["evidence"][0] not in cites:
+        cites.append(steps[-1]["evidence"][0])
+    return cites
+
+
 def narrate(inc: dict, steps: list[dict]) -> list[dict]:
     if not steps:
         return []
@@ -20,7 +32,7 @@ def narrate(inc: dict, steps: list[dict]) -> list[dict]:
     path = " -> ".join(inc.get("path") or [])
     out.append({"text": f"Between {_t(first['ts'])} and {_t(last['ts'])} an attacker moved through {len(stages)} "
                         f"kill-chain stages ({', '.join(stages)}) across {path or first['host']}.",
-                "citations": [first["evidence"][0], last["evidence"][0]], "kind": "observed", "section": "summary"})
+                "citations": _cover_hosts(steps, inc.get("path") or []), "kind": "observed", "section": "summary"})
     for s in steps:
         who = f" as {s['user']}" if s.get("user") else ""
         name = s.get("technique_name") or s["technique"]

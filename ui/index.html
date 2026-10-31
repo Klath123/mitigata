@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AttackStory</title>
+<style>
+:root{--bg:#0f1216;--panel:#161b22;--panel2:#1d232c;--line:#2a313c;--text:#e6e9ee;--muted:#8b95a3;--accent:#4c9aff;
+--crit:#ff5c5c;--high:#ff9f43;--med:#f6c945;--low:#5bc0a0;--solid:#c9d4e3;--dash:#6b7686;--chip:#24303d}
+@media (prefers-color-scheme: light){:root:not([data-theme=dark]){--bg:#f5f7fa;--panel:#fff;--panel2:#f0f3f7;--line:#dde3ea;
+--text:#18202a;--muted:#5d6876;--chip:#e7eef7;--solid:#3b4757;--dash:#9aa5b3}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+header h1{font-size:17px;margin:0 8px 0 0}.stat{color:var(--muted);font-size:12px}.stat b{color:var(--text);font-size:14px}
+main{display:grid;grid-template-columns:300px minmax(0,1fr) 380px;height:calc(100vh - 54px)}
+aside,section{overflow:auto;border-right:1px solid var(--line)}aside{background:var(--panel)}
+#right{background:var(--panel);border-right:0}
+.inc{padding:10px 12px;border-bottom:1px solid var(--line);cursor:pointer}.inc:hover,.inc.sel{background:var(--panel2)}
+.inc .risk{font-weight:700;font-size:16px}.inc .path{color:var(--muted);font-size:12px;word-break:break-word}
+.bars{display:flex;gap:3px;margin-top:6px}.bars span{flex:1;height:5px;border-radius:3px;background:var(--line);position:relative;overflow:hidden}
+.bars span i{position:absolute;left:0;top:0;bottom:0;background:var(--accent)}
+.badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;background:var(--chip);color:var(--text);margin:1px 2px}
+.v-attack{background:var(--crit);color:#fff}.v-review{background:var(--med);color:#222}
+.tabs{display:flex;gap:2px;padding:8px 12px 0;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2;flex-wrap:wrap}
+.tabs button{background:none;border:0;color:var(--muted);padding:8px 12px;cursor:pointer;border-bottom:2px solid transparent;font:inherit}
+.tabs button.on{color:var(--text);border-color:var(--accent)}
+.pane{padding:14px 16px;display:none}.pane.on{display:block}
+.controls{display:flex;gap:18px;align-items:center;margin-bottom:10px;color:var(--muted);font-size:12px;flex-wrap:wrap}
+svg text{fill:var(--text);font-size:11px}svg .lane{fill:var(--panel2)}svg .lanel{fill:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.node{cursor:pointer}.node rect{stroke:var(--line)}.node:hover rect{stroke:var(--accent);stroke-width:2}
+table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}
+.card h3{margin:0 0 8px;font-size:14px}
+.sent{margin:0 0 10px}.sent.inferred{color:var(--muted);font-style:italic}
+.cite{display:inline-block;background:var(--chip);border-radius:4px;padding:0 5px;margin-left:3px;font:11px ui-monospace,monospace;cursor:pointer;color:var(--accent)}
+pre{white-space:pre-wrap;word-break:break-all;background:var(--panel2);padding:8px;border-radius:6px;font:12px/1.4 ui-monospace,Consolas,monospace;max-height:320px;overflow:auto}
+.banner{background:#4a1d1d;color:#ffd6d6;border:1px solid var(--crit);border-radius:8px;padding:10px 12px;margin-bottom:12px}
+@media (prefers-color-scheme: light){:root:not([data-theme=dark]) .banner{background:#ffecec;color:#7a1414}}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:2px 10px;font-size:12px}.kv div:nth-child(odd){color:var(--muted)}
+.empty{color:var(--muted);padding:20px}
+.counters{display:flex;gap:14px;flex-wrap:wrap}.counters div{font-size:12px;color:var(--muted)}.counters b{display:block;font-size:18px;color:var(--text)}
+a{color:var(--accent)}button.btn{background:var(--chip);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font:inherit;font-size:12px}
+@media (max-width:1100px){main{grid-template-columns:1fr;height:auto}aside,section{border-right:0;border-bottom:1px solid var(--line);max-height:none}}
+</style>
+</head>
+<body>
+<header>
+  <h1>AttackStory</h1>
+  <span class="stat" id="s-data"></span>
+  <span style="flex:1"></span>
+  <label class="stat"><input type="checkbox" id="rev"> show review clusters</label>
+  <button class="btn" id="theme">theme</button>
+</header>
+<main>
+  <aside id="list"><div class="empty">Loading…</div></aside>
+  <section>
+    <div class="tabs" id="tabs">
+      <button data-t="kill" class="on">Kill map</button><button data-t="hop">Host hops</button>
+      <button data-t="time">Timeline</button><button data-t="look">Look-ahead</button>
+      <button data-t="ioc">Indicators &amp; blast radius</button><button data-t="excl">Excluded &amp; gaps</button>
+      <button data-t="steps">Steps table</button>
+    </div>
+    <div id="center"><div class="empty">Select an incident.</div></div>
+  </section>
+  <aside id="right"><div class="empty">Narrative and evidence appear here.</div></aside>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const TACTICS = ["Reconnaissance","Resource Development","Initial Access","Execution","Persistence","Privilege Escalation",
+  "Defense Evasion","Credential Access","Discovery","Lateral Movement","Collection","Command and Control","Exfiltration","Impact"];
+const SEV = s => s >= .9 ? "var(--crit)" : s >= .7 ? "var(--high)" : s >= .45 ? "var(--med)" : "var(--low)";
+let state = {tab: "kill", inc: null, minConf: 0.4, replay: 999};
+try { const t = localStorage.getItem("as-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+$("#theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+  try { localStorage.setItem("as-theme", r.dataset.theme); } catch (e) {} };
+
+async function api(p) { const r = await fetch(p); if (!r.ok) throw new Error(p + " " + r.status); return r.json(); }
+
+async function loadStats() {
+  try {
+    const s = await api("/stats"); const p = s.processed || {}, c = s.counts || {};
+    $("#s-data").innerHTML = `<b>${esc(s.dataset)}</b> · ${(p.events||0).toLocaleString()} events · ${((p.bytes||0)/2**30).toFixed(2)} GB ·
+      ${p.seconds}s · peak ${p.peak_memory_gb} GB · ${c.raw_hit_rows||0} raw hits → ${c.clusters||0} clusters →
+      <b>${c.attack_incidents||0}</b> incidents`;
+  } catch (e) { $("#s-data").textContent = "no results loaded"; }
+}
+
+async function loadList() {
+  const d = await api("/incidents" + ($("#rev").checked ? "?include_review=true" : ""));
+  if (!d.incidents.length) { $("#list").innerHTML = '<div class="empty">No confident attack found.</div>'; return; }
+  $("#list").innerHTML = d.incidents.map(i => {
+    const b = i.score_breakdown || {};
+    const bars = [["tactics", Math.min(b.tactics||0,6)/6], ["order", b.order||0], ["hosts", Math.min(b.hosts||0,3)/3],
+                  ["severity", b.severity||0], ["rarity", b.rarity||0]];
+    return `<div class="inc" data-id="${i.incident_id}">
+      <div><span class="risk">${i.risk.toFixed(2)}</span> <span class="badge v-${i.verdict}">${i.verdict}</span>
+      <span class="badge">#${i.incident_id}</span> <span class="badge">${i.alerts_merged} alerts merged</span>
+      ${i.injection_flags ? '<span class="badge v-attack">injection</span>' : ''}</div>
+      <div class="path">${esc(i.path.slice(0,8).join(" → "))}${i.path.length>8?" …":""}</div>
+      <div class="path">${i.steps} steps · ${i.stages_covered} stages · ${esc(i.first_seen.slice(0,16).replace("T"," "))}</div>
+      <div class="bars" title="${bars.map(x=>x[0]+" "+x[1].toFixed(2)).join(", ")}">${bars.map(x=>`<span><i style="width:${x[1]*100}%"></i></span>`).join("")}</div>
+    </div>`; }).join("");
+  document.querySelectorAll(".inc").forEach(el => el.onclick = () => openIncident(+el.dataset.id));
+  if (!state.inc) openIncident(d.incidents[0].incident_id);
+}
+
+async function openIncident(id) {
+  document.querySelectorAll(".inc").forEach(el => el.classList.toggle("sel", +el.dataset.id === id));
+  const [inc, look, rep] = await Promise.all([api(`/incidents/${id}`), api(`/incidents/${id}/lookahead`), api(`/incidents/${id}/report`)]);
+  state.inc = inc; state.look = look; state.rep = rep; state.replay = inc.steps.length;
+  renderRight(); renderCenter();
+}
+
+function renderCenter() {
+  const inc = state.inc; if (!inc) return;
+  const br = (inc.blast_radius||{}).confirmed || {};
+  let h = "";
+  if ((inc.injection_flags||[]).length) h += `<div class="banner"><b>Instruction-like text found in log fields</b> — treated as attacker data, it cannot change the verdict.<br>` +
+    inc.injection_flags.slice(0,3).map(f => `<span class="cite" data-ev="${esc(f.evidence)}">${esc(f.evidence)}</span> ${esc(f.field)}: “${esc(f.match)}”`).join("<br>") + `</div>`;
+  h += `<div class="counters card"><div><b>${inc.risk}</b>risk</div><div><b>${(br.hosts||[]).length}</b>hosts</div><div><b>${(br.users||[]).length}</b>accounts</div>
+    <div><b>${(br.external_ips||[]).length}</b>external IPs</div><div><b>${inc.alerts_merged}</b>alerts merged</div>
+    <div><b>${((inc.blast_radius||{}).potential||{}).potential_hosts?.length||0}</b>could reach next</div>
+    <div style="flex:1"></div><div><a class="btn" href="/incidents/${inc.incident_id}/navigator">ATT&amp;CK Navigator layer</a>
+    <a class="btn" href="/incidents/${inc.incident_id}/report?format=md" target="_blank">Report (markdown)</a></div></div>`;
+  const panes = {kill: killMap, hop: hopView, time: timeline, look: lookAhead, ioc: indicators, excl: excluded, steps: stepsTable};
+  h += `<div class="pane on">${panes[state.tab]()}</div>`;
+  $("#center").innerHTML = h;
+  wireEvidence($("#center"));
+  const cs = $("#conf"); if (cs) cs.oninput = e => { state.minConf = +e.target.value; renderCenter(); };
+  const rp = $("#replay"); if (rp) rp.oninput = e => { state.replay = +e.target.value; renderCenter(); };
+  document.querySelectorAll("[data-step]").forEach(el => el.onclick = () => showStep(+el.dataset.step));
+}
+
+function stepColor(s) { return s.label_source === "vendor" ? "var(--high)" : s.label_source === "sigma" ? "var(--med)" : "var(--accent)"; }
+
+function killMap() {
+  const inc = state.inc, steps = inc.steps.filter(s => s.order <= state.replay);
+  const tactics = TACTICS.filter(t => inc.steps.some(s => s.stage === t));
+  const hosts = [...new Set(inc.path.concat(inc.steps.map(s => s.host)).filter(Boolean))];
+  const CW = 150, NW = 138, NH = 22, LX = 120, TY = 30;
+  const cnt = {}; for (const s of inc.steps) { const k = s.host + "|" + s.stage; cnt[k] = (cnt[k] || 0) + 1; }
+  const rowH = hosts.map(h => 16 + NH * Math.max(1, ...tactics.map(t => cnt[h + "|" + t] || 0)) + 4 * Math.max(0, ...tactics.map(t => (cnt[h + "|" + t] || 1) - 1)));
+  const rowY = []; rowH.reduce((y, hgt, i) => (rowY[i] = y, y + hgt + 6), TY);
+  const W = LX + tactics.length * CW + 20, H = (rowY.at(-1) || TY) + (rowH.at(-1) || 40) + 10;
+  const pos = {}, slot = {};
+  for (const s of inc.steps) { const k = s.host + "|" + s.stage; slot[k] = (slot[k] || 0) + 1;
+    const hi = hosts.indexOf(s.host);
+    pos[s.order] = [LX + tactics.indexOf(s.stage) * CW + 6, rowY[hi] + 8 + (slot[k] - 1) * (NH + 4)]; }
+  let svg = `<svg width="${W}" height="${Math.max(H, 120)}" role="img" aria-label="Kill map">`;
+  tactics.forEach((t, i) => { svg += `<rect class="lane" x="${LX+i*CW}" y="${TY-4}" width="${CW-4}" height="${H-TY}" rx="6"/>
+    <text class="lanel" x="${LX+i*CW+6}" y="${TY-10}">${esc(t)}</text>`; });
+  hosts.forEach((h, i) => svg += `<line x1="0" x2="${W}" y1="${rowY[i]-3}" y2="${rowY[i]-3}" stroke="var(--line)"/><text x="6" y="${rowY[i]+22}" font-weight="600">${esc(h)}</text>`);
+  for (const e of (inc.graph.edges||[])) {
+    if (e.kind !== "evidence" || e.confidence < state.minConf) continue;
+    const a = pos[+e.src.slice(4)], b = pos[+e.dst.slice(4)]; if (!a || !b) continue;
+    svg += `<line x1="${a[0]+NW/2}" y1="${a[1]+NH/2}" x2="${b[0]+NW/2}" y2="${b[1]+NH/2}" stroke="${e.style==="solid"?"var(--solid)":"var(--dash)"}"
+      stroke-width="${e.style==="solid"?1.6:1}" ${e.style==="solid"&&!e.inferred?"":'stroke-dasharray="4 3"'} opacity=".7"><title>${e.confidence} ${esc((e.reasons||[]).join(", "))}${e.inferred?" (inferred across a log gap)":""}</title></line>`;
+  }
+  for (const s of steps) { const [x, y] = pos[s.order];
+    const nm = (s.technique_name || "").length > 13 ? s.technique_name.slice(0, 12) + "…" : (s.technique_name || "");
+    svg += `<g class="node" data-step="${s.order}"><rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="4" fill="var(--panel)" stroke="${stepColor(s)}"/>
+      <rect x="${x}" y="${y}" width="4" height="${NH}" rx="2" fill="${stepColor(s)}"/>
+      <text x="${x+8}" y="${y+15}"><tspan font-weight="700">${s.order}</tspan> ${esc(s.technique)} ${esc(nm)}</text>
+      <title>${esc(s.time)} ${esc(s.host)} ${esc(s.user||"")}\n${esc(s.summary)}</title></g>`; }
+  svg += "</svg>";
+  return `<div class="controls"><label>Show links with confidence ≥ <input id="conf" type="range" min="0.4" max="1" step="0.05" value="${state.minConf}"> ${state.minConf.toFixed(2)}</label>
+    <label>Replay: step <input id="replay" type="range" min="1" max="${inc.steps.length}" value="${state.replay}"> ${state.replay}/${inc.steps.length}</label>
+    <span><span class="badge" style="background:var(--accent);color:#fff">rule</span><span class="badge" style="background:var(--high)">vendor</span><span class="badge" style="background:var(--med)">sigma</span> label source · solid ≥0.7 · dashed possible</span></div>
+    <div style="overflow:auto">${svg}</div>`;
+}
+
+function hopView() {
+  const inc = state.inc, hops = inc.hops || [];
+  const nodes = [...new Set(hops.flatMap(h => [h.from, h.to]).concat(inc.path))];
+  if (!nodes.length) return '<div class="empty">No host-to-host movement observed.</div>';
+  const W = Math.max(600, nodes.length * 170), H = 220, y = 110;
+  const x = n => 80 + nodes.indexOf(n) * ((W - 160) / Math.max(1, nodes.length - 1));
+  let svg = `<svg width="${W}" height="${H}"><defs><marker id="ar" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--solid)"/></marker></defs>`;
+  hops.forEach((h, i) => { const x1 = x(h.from), x2 = x(h.to), up = i % 2 ? 1 : -1, cy = y + up * (40 + 12 * i);
+    svg += `<path d="M${x1},${y} Q${(x1+x2)/2},${cy} ${x2-24},${y}" fill="none" stroke="var(--solid)" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="${(x1+x2)/2-40}" y="${cy + up*4}" class="cite" data-ev="${esc(h.evidence)}">${esc(h.user||"?")} · ${esc(h.time.slice(11,16))}</text>`; });
+  nodes.forEach(n => { const ext = hops.some(h => h.external && h.from === n);
+    svg += `<circle cx="${x(n)}" cy="${y}" r="22" fill="${ext ? "var(--crit)" : "var(--panel2)"}" stroke="var(--accent)"/>
+      <text x="${x(n)}" y="${y+40}" text-anchor="middle" font-weight="600">${esc(n)}</text>`; });
+  return `<p class="stat">Machines only, with the account used on each hop (click a label for the logon record). Red = internet source.</p><div style="overflow:auto">${svg}</div>`;
+}
+
+function timeline() {
+  const inc = state.inc; const t0 = Date.parse(inc.steps[0].time), t1 = Date.parse(inc.steps.at(-1).time) || t0 + 1;
+  const span = Math.max(t1 - t0, 1);
+  const rows = inc.steps.map(s => { const p = (Date.parse(s.time) - t0) / span * 100;
+    return `<tr data-step="${s.order}" style="cursor:pointer"><td>${s.order}</td><td>${esc(s.time.slice(0,19).replace("T"," "))}</td>
+      <td style="width:35%"><div style="position:relative;height:10px;background:var(--panel2);border-radius:5px">
+      <div style="position:absolute;left:${p}%;width:8px;height:10px;border-radius:5px;background:${stepColor(s)}"></div></div></td>
+      <td><span class="badge">${esc(s.stage)}</span></td><td>${esc(s.host)}</td><td>${esc(s.sub_technique||s.technique)}</td></tr>`; }).join("");
+  const dwell = ((t1 - t0) / 60000).toFixed(1);
+  const gaps = (inc.gaps||[]).map(g => `<li>${esc(g.host)} silent ${esc(g.start.slice(11,16))}–${esc(g.end.slice(11,16))} (expected ~${g.expected_events} events)</li>`).join("");
+  return `<p class="stat">Dwell time ${dwell} min from first to last step.</p><table><tr><th>#</th><th>Time (UTC)</th><th>Position</th><th>Stage</th><th>Host</th><th>Technique</th></tr>${rows}</table>
+    ${gaps ? `<div class="card" style="margin-top:12px"><h3>Logging gaps inside the incident</h3><ul>${gaps}</ul></div>` : ""}`;
+}
+
+function lookAhead() {
+  const L = state.look; const chains = ((L.blast_radius||{}).potential||{}).chains || [];
+  if (!(L.look_ahead||[]).length) return '<div class="empty">No further reach observed in the logs.</div>';
+  return (L.look_ahead).map(a => `<div class="card"><h3>${esc(a.account)} → ${a.can_reach.length} host(s)</h3>
+      <div>${a.can_reach.map(h => `<span class="badge">${esc(h)}</span>`).join("")}</div>
+      <p class="stat">${esc(a.why)}</p></div>`).join("") +
+    (chains.length ? `<div class="card"><h3>Credential chains</h3><table><tr><th>Target</th><th>Role</th><th>Chain</th></tr>` +
+      chains.slice(0,25).map(c => `<tr><td>${esc(c.target)}</td><td>${esc(c.role)}</td><td>${esc(c.chain.join(" → "))}</td></tr>`).join("") + "</table></div>" : "") +
+    `<p class="stat">“Observed admin access”: logs show what accounts did, not everything they are allowed to do.</p>`;
+}
+
+function indicators() {
+  const L = state.look, br = (L.blast_radius||{}).confirmed || {}, ke = L.key_entities || {};
+  const list = (t, a) => `<div class="card"><h3>${t}</h3>${(a||[]).length ? a.map(x => `<span class="badge">${esc(x)}</span>`).join("") : '<span class="stat">none</span>'}</div>`;
+  const inds = (L.indicators||[]).map(i => `<tr><td>${esc(i.type)}</td><td><code>${esc(i.value)}</code></td><td>${i.hits}</td><td>${i.hosts}</td></tr>`).join("");
+  return (inds ? `<div class="card"><h3>Shared indicators (block / hunt)</h3><table><tr><th>Type</th><th>Value</th><th>Hits</th><th>Hosts</th></tr>${inds}</table></div>` : "") +
+    `<div class="card"><h3>Key entities (betweenness centrality)</h3>${(ke.hosts||[]).map(h=>`<span class="badge">${esc(h.name)} ${h.centrality}</span>`).join("")}
+     ${(ke.accounts||[]).map(h=>`<span class="badge">👤 ${esc(h.name)} ${h.centrality}</span>`).join("")}</div>` +
+    list("Hosts (confirmed)", br.hosts) + list("Accounts (confirmed)", br.users) + list("External IPs", br.external_ips) +
+    list("Files and shares", (br.files_and_shares||[]).slice(0,40));
+}
+
+function excluded() {
+  const inc = state.inc; const ex = inc.excluded || [];
+  return `<div class="card"><h3>Considered and excluded (${ex.length})</h3>${ex.length ? `<table><tr><th>Technique</th><th>Host</th><th>Account</th><th>Why excluded</th><th>Evidence</th></tr>` +
+    ex.map(x => `<tr><td>${esc(x.technique)}</td><td>${esc(x.host)}</td><td>${esc(x.user)}</td><td>${esc(x.reason)}</td>
+      <td>${x.evidence.slice(0,2).map(e=>`<span class="cite" data-ev="${esc(e)}">${esc(e.split("/").pop())}</span>`).join("")}</td></tr>`).join("") + "</table>" :
+    '<span class="stat">No lookalike activity near this incident.</span>'}</div>
+    <div class="card"><h3>Logging gaps</h3>${(inc.gaps||[]).length ? (inc.gaps).map(g => `<div>${esc(g.host)}: ${esc(g.start)} → ${esc(g.end)} · edges crossing: ${esc((g.crosses_edges||[]).join(", ")||"none")}</div>`).join("") : '<span class="stat">No gaps detected on the incident hosts.</span>'}</div>`;
+}
+
+function stepsTable() {
+  return `<table><tr><th>#</th><th>Time</th><th>Host</th><th>Account</th><th>Technique</th><th>Stage</th><th>Label</th><th>Evidence</th></tr>` +
+    state.inc.steps.map(s => `<tr data-step="${s.order}" style="cursor:pointer"><td>${s.order}</td><td>${esc(s.time.slice(11,19))}</td><td>${esc(s.host)}</td><td>${esc(s.user)}</td>
+      <td>${esc(s.sub_technique||s.technique)} ${esc(s.technique_name||"")}</td><td>${esc(s.stage)}</td><td>${esc(s.label_source)}</td><td>${s.evidence.length}</td></tr>`).join("") + "</table>";
+}
+
+function renderRight() {
+  const rep = state.rep; let obsOnly = state.obsOnly;
+  const sents = (rep.sentences||[]).filter(s => !obsOnly || s.kind === "observed");
+  const sec = {summary:"Summary", timeline:"What happened", movement:"Movement", look_ahead:"Could reach next", gaps:"Gaps", impact:"Impact", recommendations:"Recommendations"};
+  let h = `<div class="pane on"><div class="controls"><b style="color:var(--text)">Narrative</b><span class="badge">${esc(rep.source)}</span>
+    <span class="badge">grounding ${rep.grounding_rate}</span><label><input type="checkbox" id="obs" ${obsOnly?"checked":""}> observed only</label></div>`;
+  h += `<div id="drawer" class="card"><h3>Evidence</h3><span class="stat">Click a step or a citation to see the raw log line.</span></div>`;
+  let last = "";
+  for (const s of sents) { if (s.section !== last) { h += `<h4 style="margin:12px 0 6px">${sec[s.section]||s.section}</h4>`; last = s.section; }
+    h += `<p class="sent ${s.kind}">${esc(s.text)} ${s.citations.slice(0,3).map(c => `<span class="cite" data-ev="${esc(c)}">${esc(c.split("/").pop())}</span>`).join("")}</p>`; }
+  h += `</div>`;
+  $("#right").innerHTML = h;
+  $("#obs").onchange = e => { state.obsOnly = e.target.checked; renderRight(); };
+  wireEvidence($("#right"));
+}
+
+function wireEvidence(root) { root.querySelectorAll("[data-ev]").forEach(el => el.onclick = ev => { ev.stopPropagation(); showEvidence([el.dataset.ev]); }); }
+
+function showStep(order) { const s = state.inc.steps.find(x => x.order === order);
+  showEvidence(s.evidence.slice(0, 5), `<div class="kv"><div>Step</div><div>${s.order}. ${esc(s.sub_technique||s.technique)} ${esc(s.technique_name||"")}</div>
+    <div>Stage</div><div>${esc(s.stage)}</div><div>Host / account</div><div>${esc(s.host)} / ${esc(s.user)}</div><div>Rule</div><div>${esc(s.rule)} (${esc(s.label_source)})</div>
+    <div>Summary</div><div>${esc(s.summary)}</div><div>Evidence</div><div>${s.evidence.length} line(s)</div></div>`); }
+
+async function showEvidence(ids, head = "") {
+  const d = $("#drawer"); if (!d) return;
+  const items = await Promise.all(ids.map(id => api("/events/" + encodeURI(id)).catch(() => ({evidence_id: id, raw: "(not indexed)"}))));
+  d.innerHTML = `<h3>Evidence</h3>${head}` + items.map(e => `<div style="margin-top:8px"><code class="stat">${esc(e.evidence_id)}</code>
+    <div class="kv">${["ts","host","user","event_type","process","cmdline","target","src_ip","dst_ip"].filter(k => e[k] != null).map(k =>
+      `<div>${k}</div><div>${esc(k==="ts" ? new Date(e[k]).toISOString() : e[k])}</div>`).join("")}</div><pre>${esc(e.raw)}</pre></div>`).join("");
+  $("#right").scrollTo({top: 0, behavior: "smooth"});
+}
+
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x === b)); state.tab = b.dataset.t; renderCenter(); });
+$("#rev").onchange = loadList;
+loadStats(); loadList().catch(e => $("#list").innerHTML = `<div class="empty">${esc(e.message)}</div>`);
+</script>
+</body>
+</html>

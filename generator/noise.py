@@ -342,7 +342,7 @@ class Noise:
         out += evs
         evs, _ = A.proc(w, ts + 2500, tgt, "SYSTEM", "C:\\Windows\\System32\\cmd.exe",
                         'cmd /c "wuauclt /detectnow"', "C:\\Windows\\PSEXESVC.exe", g, lid)
-        return out + evs
+        return A.tagged(out + evs, ("decoy", "it_admin_psexec"))
 
     def _admin_discovery(self, t):
         w, r = self.w, self.rng
@@ -351,7 +351,7 @@ class Noise:
         img = "C:\\Windows\\System32\\" + ("nltest.exe" if cmd.startswith("nltest") else
                                            "ipconfig.exe" if cmd.startswith("ipconfig") else "net.exe")
         evs, _ = A.proc(w, self._t(t), "IT-01", "it_admin", img, cmd, "C:\\Windows\\System32\\cmd.exe", w.guid())
-        return evs
+        return A.tagged(evs, ("decoy", "admin_discovery"))
 
     def _legit_upload(self, t):
         w, r = self.w, self.rng
@@ -368,7 +368,7 @@ class Noise:
         for k in range(r.randint(8, 30)):
             out += A.logon_fail(w, ts + k * r.randint(1500, 6000), "SSO-01",
                                 r.choice(["administrator", "admin", "test", "user", "scanner"]), 3, src, "-")
-        return out
+        return A.tagged(out, ("decoy", "rdp_scanner"))
 
     def _ssh_scanner(self, t):
         w, r = self.w, self.rng
@@ -416,4 +416,5 @@ class Noise:
     def _backup_operator_change(self, t):
         """Legit but privileged: adm_ravi adds svc_backup to Backup Operators (a T1098 lookalike)."""
         w = self.w
-        return A.group_add(self._t(t), "DC-01", "adm_ravi", "svc_backup", "Backup Operators", w.logon_id())
+        return A.tagged(A.group_add(self._t(t), "DC-01", "adm_ravi", "svc_backup", "Backup Operators", w.logon_id()),
+                        ("decoy", "backup_operator_change"))

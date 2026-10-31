@@ -115,6 +115,9 @@ def score(gt: dict, incidents: list[dict], stats: dict) -> dict:
                            "rank": rank})
 
     false_inc = [i["incident_id"] for i in incidents if not (inc_events[i["incident_id"]] & all_mal)]
+    decoy_ev = {e: kind for kind, evs in (gt.get("decoys") or {}).items() for e in evs}
+    step_events = {e for inc in incidents for s in inc["steps"] for e in s["evidence"]}
+    decoys_in = sorted({decoy_ev[e] + ":" + e for e in step_events if e in decoy_ev})
     story = set().union(*inc_events.values()) if inc_events else set()
     proc = stats.get("processed", {})
     out = {
@@ -125,6 +128,8 @@ def score(gt: dict, incidents: list[dict], stats: dict) -> dict:
         "paths": paths_ok / len(gt["attacks"]) if gt["attacks"] else None,
         "false_alarms": len(false_inc) / len(incidents) if incidents else 0.0,
         "false_incident_ids": false_inc,
+        "decoy_inclusions": len(decoys_in) if gt.get("decoys") is not None else None,
+        "decoy_inclusion_list": decoys_in[:20],
         "entry_point": entry_ok / len(gt["attacks"]) if gt["attacks"] else None,
         "order_accuracy": order_ok / order_pairs if order_pairs else None,
         "hop_recall": hops_found / hops_total if hops_total else None,
@@ -169,7 +174,8 @@ def table(s: dict) -> str:
     lines.append("")
     lines.append(f"entry point {pct(s['entry_point'])}  order accuracy {pct(s['order_accuracy'])}  hop recall "
                  f"{pct(s['hop_recall'])}  event recall {pct(s['event_recall'])}  event precision "
-                 f"{pct(s['event_precision'])}")
+                 f"{pct(s['event_precision'])}  decoy inclusions "
+                 f"{'n/a' if s['decoy_inclusions'] is None else s['decoy_inclusions']} (target 0)")
     for a in s["per_attack"]:
         lines.append(f"  attack {a['attack_id']} ({a['scenario']}): {a['found']}/{a['steps']} found, "
                      f"{a['labels_right']}/{a['steps']} labelled, incident #{a['incident']} rank {a['rank']}, "

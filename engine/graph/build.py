@@ -185,8 +185,8 @@ class Linker:
                 j = bisect.bisect_right(ts, N[a].ts_end + 5 * MIN)
                 for b in members[i + 1:j]:
                     self.add(a, b, "time_proximity")
+        self._system_activity(host_sorted)          # first: explains service/SYSTEM hits by their own session
         self._logon_hops(host_sorted, host_ts)
-        self._system_activity(host_sorted)
 
         return {k: noisy_or(v.values()) for k, v in self.reasons.items()}
 
@@ -280,6 +280,8 @@ class Linker:
                 lo = bisect.bisect_left(ts, t - 2 * HOUR)
                 hi = bisect.bisect_right(ts, t + 5 * MIN)
                 for other in host_sorted[x][lo:hi]:
+                    if other in self.attribution:       # already explained by another (unflagged) session
+                        continue
                     o = N[other]
                     if o.severity >= 0.45 or o.technique in ("T1003", "T1552"):
                         w = WEIGHTS["logon_hop"]
