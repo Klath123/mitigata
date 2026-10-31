@@ -126,7 +126,8 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
         "total_records": recs,
         "successfully_parsed": recs - malformed,
         "malformed_records": malformed,
-        "binary_lines_skipped": ingest_report.get("binary_lines", 0),
+        "binary_lines_skipped": (ingest_report.get("binary_lines", 0) if isinstance(ingest_report.get("binary_lines", 0), int)
+                                 else ingest_report.get("binary_lines_skipped", 0)),
         "missing_critical_fields": {
             "timestamp": t["ts_missing"], "host": t["host_missing"], "event_type": t["type_missing"],
             "user_where_expected": t["user_missing"], "source_of_remote_logon": t["remote_logon_no_source"],
@@ -200,8 +201,11 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
     for sk in ingest_report.get("skipped") or []:
         warn("medium", f"file {sk['file']} was not read: {sk['reason']}")
     for rel, f in (ingest_report.get("files") or {}).items():
-        if f.get("binary_lines"):
-            warn("high", f"{rel}: {f['binary_lines']:,} lines ({f.get('binary_bytes', 0) / 2**20:.0f} MB) are "
+        nb = f.get("binary_lines")
+        if isinstance(nb, list):          # ingest reports written before the merge stored a line range there
+            nb = f.get("binary", 0)
+        if nb:
+            warn("high", f"{rel}: {nb:,} lines ({f.get('binary_bytes', 0) / 2**20:.0f} MB) are "
                          f"binary/corrupt content; skipped, not turned into events")
     if rates["malformed_pct"] >= 1:
         warn("high", f"{malformed:,} records ({rates['malformed_pct']}%) matched no parser; kept as raw text "
