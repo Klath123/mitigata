@@ -30,9 +30,8 @@ boxes, not the laptop (user preference).
 **Done:** GCP #1 synthetic check of `cdbf587` passed (`/data/logs/bench/out/phase6/summary.txt`, 2026-10-31 19:32Z).
 **Done:** big box hackathon rerun with `cdbf587` (351 s, peak 6.02 GB, **5 incidents: 2 attack + 3 review**; the
 earlier "44 review" was a misread, see section 5 item 6).
-**Still running (stop it):** big box "before" baseline (old engine, `tmux before`): still in correlation after 2 h 52 m
-at 9.07 GB RSS, i.e. over the 8 GB budget. That is the evidence it was meant to give. Stop it with
-`ssh -i ~/.ssh/gce-big.pem pater@34.85.120.251 'tmux kill-session -t before'`.
+**Stopped 2026-11-01:** big box "before" baseline (old engine): never left correlation in 2 h 52 m and reached
+9.07 GB RSS, over the 8 GB budget. The new engine does the same file in 351 s at a 6.0 GB peak.
 
 ## 3. How to measure
 
@@ -79,8 +78,7 @@ Rules for these were written after seeing the file: not a blind measurement.
 
 ## 6. Next steps (agreed order)
 
-1. ~~Endpoint scan→upload review flood~~: not a real problem, it was stale files (section 5 item 6). Still to do:
-   stop `tmux before` on the big box (section 2).
+1. ~~Endpoint scan→upload review flood~~: not a real problem, it was stale files (section 5 item 6). Baseline stopped.
 2. Rerun the **blind** set on AWS with the final code (`bash ~/round6.sh $HOME/bench blind <hayabusa-musl>`) — honest
    before/after for incident formation; check the small drops (Linux 10→7%, mix technique 83→80%).
 3. Write the **hackathon findings report** (timeline, evidence lines, what the logs cannot show) — as an Artifact.
