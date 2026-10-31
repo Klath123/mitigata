@@ -40,7 +40,7 @@ mixed() {  # real OTRF recordings injected into the clean synthetic network (beh
 }
 if [ "$SETS" != synth ]; then
   [ -f "$SY/clean/ground_truth.json" ] || $PY -m generator.gen --out "$SY/clean" --size 100MB --seed 7 --days 3 --clean > "$OUT/gen_clean.log" 2>&1
-  (blind evtx; blind otrf; mixed) & (blind splunk) &
+  (blind evtx; blind otrf; mixed) & (blind splunk; [ -f "$B/corpora/splunk_linux.labels.json" ] && blind splunk_linux) &
   wait
 fi
 
@@ -51,7 +51,7 @@ fi
     echo "## $s"; grep -E "Detection|Correct labels|Attack paths|False alarms|extrapolated|entry point|attack [0-9]+ \(" "$OUT/$s.txt"
     $PY -c "import json;s=json.load(open('$OUT/$s.stats.json'));print('  incidents',s['counts']['attack_incidents'],'attack /',s['counts']['review_incidents'],'review; hunt',s['stages_seconds']['detection'],'s')" 2>/dev/null
   done
-  for s in evtx otrf splunk mix_otrf; do
+  for s in evtx otrf splunk splunk_linux mix_otrf; do
     [ -f "$OUT/$s.txt" ] || continue
     echo "## $s (blind)"; sed -n '2,7p' "$OUT/$s.txt"
     $PY -c "import json;s=json.load(open('$OUT/$s.stats.json'));p=s['processed'];print('  ',p['events'],'events',p['seconds'],'s; hunt',s['stages_seconds']['detection'],'s; unparsed',p['unparsed'])" 2>/dev/null

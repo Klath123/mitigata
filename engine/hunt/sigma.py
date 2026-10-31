@@ -36,6 +36,7 @@ FIELD_MAP = {
     "hash": "hashes", "integritylevel": "integrity_level", "imageloaded": "image_loaded",
     "signed": "signed", "signaturestatus": "signed", "ticketencryptiontype": "ticket_encryption",
     "pipename": "target", "relativetargetname": "target", "payload": "message", "contextinfo": "message",
+    "query": "target", "action": "action",           # category dns / firewall rules (any vendor)
 }
 NUMERIC = {"logon_type", "dst_port", "src_port"}
 
@@ -50,13 +51,13 @@ CATEGORY = {
     "registry_add": "e.event_type = 'sysmon:12'",
     "process_access": "e.event_type = 'sysmon:10'",
     "image_load": "e.event_type = 'sysmon:7'",
-    "dns_query": "e.event_type = 'sysmon:22'",
-    "dns": "e.event_type = 'sysmon:22'",
+    "dns_query": "e.event_type IN ('sysmon:22', 'dns:query', 'zeek:dns')",
+    "dns": "e.event_type IN ('sysmon:22', 'dns:query', 'zeek:dns')",
     "create_remote_thread": "e.event_type = 'sysmon:8'",
     "ps_script": "e.event_type = 'ps:4104'",
     "webserver": "e.event_type = 'web:req'",
-    "proxy": "e.event_type = 'web:req'",
-    "firewall": "e.event_type IN ('net:flow','zeek:conn')",
+    "proxy": "e.event_type IN ('web:req', 'fw:web')",
+    "firewall": "e.event_type IN ('net:flow', 'fw:flow', 'zeek:conn')",
     "pipe_created": "e.event_type IN ('sysmon:17','sysmon:18')",
     "driver_load": "e.event_type = 'sysmon:6'",
     "file_delete": "e.event_type IN ('sysmon:23','sysmon:26')",
@@ -99,10 +100,26 @@ def _wild(v: str) -> str:
     return "".join(out)
 
 
+# network devices (FortiGate, Zeek, Cisco...): Sigma uses the vendor's own field names; ours where we have the
+# column, else the exact key in `extra` (where ingest keeps every unmapped vendor field)
+NETWORK_PRODUCTS = {"fortigate", "fortios", "zeek", "cisco", "juniper", "huawei", "paloalto", "checkpoint"}
+NETWORK_FIELD_MAP = {"action": "action", "user": '"user"', "srcip": "src_ip", "dstip": "dst_ip", "src_ip": "src_ip",
+                     "dst_ip": "dst_ip", "srcport": "src_port", "dstport": "dst_port", "dst_port": "dst_port",
+                     "id.orig_h": "src_ip", "id.resp_h": "dst_ip", "id.resp_p": "dst_port", "query": "target",
+                     "qname": "target", "hostname": "dst_host", "url": "target", "msg": "message",
+                     "devname": "host", "attack": "rule", "virus": "rule"}
+_PRODUCT: list[str | None] = [None]   # ponytail: converter-wide product, pass explicitly if conversion goes parallel
+
+
 def _field_expr(field: str) -> tuple[str, bool]:
     f = field.lower()
     if f == "eventid":
         return "eventid", False
+    if _PRODUCT[0] in NETWORK_PRODUCTS:
+        if f in NETWORK_FIELD_MAP:
+            col = NETWORK_FIELD_MAP[f]
+            return f"e.{col}", col in NUMERIC
+        return f"json_extract_string(e.extra, '$.\"{field}\"')", False
     if f in FIELD_MAP:
         col = FIELD_MAP[f]
         return (f"e.{col}" if not col.startswith('"') else f"e.{col}"), col in NUMERIC
@@ -210,8 +227,13 @@ def _condition(cond: str, sels: dict[str, str]) -> str:
 
 
 SUPPORTED_MODS = {"contains", "startswith", "endswith", "all", "re", "i", "cidr", "windash"}
+_NET = "(e.event_type LIKE 'fw:%' OR e.event_type IN ('auth:success', 'auth:fail', 'net:flow', 'dns:query'))"
 PRODUCTS = {"windows": "(e.event_type LIKE 'win:%' OR e.event_type LIKE 'sysmon:%' OR e.event_type LIKE 'ps:%')",
-            "linux": "(e.event_type LIKE 'audit:%' OR e.event_type LIKE 'auth:%' OR e.event_type LIKE 'syslog:%')"}
+            "linux": "(e.event_type LIKE 'audit:%' OR e.event_type LIKE 'auth:%' OR e.event_type LIKE 'syslog:%')",
+            "fortigate": _NET, "fortios": _NET, "paloalto": _NET, "checkpoint": _NET,
+            "zeek": "e.event_type LIKE 'zeek:%'",
+            "cisco": f"({_NET} OR e.event_type LIKE 'syslog:%')", "juniper": f"({_NET} OR e.event_type LIKE 'syslog:%')",
+            "huawei": f"({_NET} OR e.event_type LIKE 'syslog:%')"}
 # Sigma levels are tuned for alert queues, not for evidence chains: low/medium become weak signals
 SIGMA_SEVERITY = {"informational": 0.05, "low": 0.15, "medium": 0.3, "high": 0.6, "critical": 0.8}
 
@@ -253,7 +275,7 @@ def refusal(doc: dict) -> str | None:
         return f"product {prod} not ingested"
     if cat and cat not in CATEGORY:
         return f"category {cat} not mapped"
-    if not cat and svc and svc not in SERVICE:
+    if not cat and svc and svc not in SERVICE and prod not in NETWORK_PRODUCTS:
         return f"service {svc} not mapped"
     if not (cat or svc or prod):
         return "no logsource"
@@ -261,7 +283,7 @@ def refusal(doc: dict) -> str | None:
     bad = sorted(mods - SUPPORTED_MODS)
     if bad:
         return f"modifier {bad[0]} not supported"
-    unmapped = sorted(f for f in fields if f not in FIELD_MAP and f != "eventid")
+    unmapped = [] if prod in NETWORK_PRODUCTS else         sorted(f for f in fields if f not in FIELD_MAP and f != "eventid")
     if unmapped:
         return f"field {unmapped[0]} not mapped"
     return None
@@ -279,6 +301,8 @@ OS_GUARD = {"windows": f"(e.event_type NOT LIKE 'audit:%' AND NOT {_UNIX_PATH})"
 def logsource_filter(doc: dict) -> str:
     ls = doc.get("logsource") or {}
     prod = ls.get("product")
+    if prod in NETWORK_PRODUCTS and ls.get("category") not in CATEGORY:
+        return PRODUCTS[prod]                    # service (event, traffic, utm...) is the vendor's own split
     if ls.get("category") in CATEGORY:
         f = CATEGORY[ls["category"]]
     elif ls.get("service") in SERVICE:
@@ -291,6 +315,7 @@ def logsource_filter(doc: dict) -> str:
 def sigma_to_rule(doc: dict, source: str = "") -> dict | None:
     if refusal(doc):
         return None
+    _PRODUCT[0] = (doc.get("logsource") or {}).get("product")
     det = doc.get("detection") or {}
     cond = det.get("condition")
     if isinstance(cond, list):

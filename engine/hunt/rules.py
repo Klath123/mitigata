@@ -319,7 +319,38 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
             stats[rid]["noisy"] = f"{n} hits > {noisy_at:.0f} (hosts x days x {NOISY_PER_HOST_DAY})"
     if SIGMA_REPORT and rules_loaded_here:
         stats["_sigma"] = dict(SIGMA_REPORT)
+    stats["_packs"] = _coverage(rules, stats)
+    for name, p in sorted(stats["_packs"].items(), key=lambda x: -x[1]["hits"]):
+        if p["fired"] or p["disabled"]:
+            log(f"    pack {name:<28} {p['rules']:>5} rules, {p['fired']:>4} fired, {p['hits']:>8,} hits"
+                + (f", {p['disabled']} disabled (no telemetry)" if p["disabled"] else ""))
     return stats
+
+
+def _pack(r: dict) -> str:
+    """Which detector pack a rule belongs to: Sigma by log family, our rules by file."""
+    if r.get("kind") == "sigma":
+        fam = r.get("product") or "generic"
+        return f"sigma:{fam}"
+    src = str(r.get("source") or "")
+    return os.path.splitext(os.path.basename(src))[0] or r.get("kind", "rules")
+
+
+def _coverage(rules: list[dict], stats: dict) -> dict:
+    packs: dict[str, dict] = {}
+    for r in rules:
+        p = packs.setdefault(_pack(r), {"rules": 0, "fired": 0, "hits": 0, "disabled": 0, "errors": 0})
+        s = stats.get(r["id"], {})
+        p["rules"] += 1
+        p["hits"] += s.get("hits", 0) or 0
+        p["fired"] += bool(s.get("hits"))
+        p["disabled"] += bool(s.get("disabled"))
+        p["errors"] += "error" in s
+    vendor = {k: v for k, v in stats.items() if not k.startswith("_") and k.startswith("hayabusa_")}
+    if vendor:
+        packs["hayabusa"] = {"rules": len(vendor), "fired": len(vendor), "disabled": 0, "errors": 0,
+                             "hits": sum(v.get("hits", 0) for v in vendor.values())}
+    return packs
 
 
 __all__ = ["load_rules", "run_rules", "load_macros", "compile_sequence", "SEVERITY", "math"]

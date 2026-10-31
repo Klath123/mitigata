@@ -105,7 +105,8 @@ rules:
           AND e.event_type IN ('net:flow', 'zeek:conn', 'csv', 'kv')
           AND coalesce(lc(e.action), 'allow') NOT IN ('deny', 'drop', 'block', 'blocked', 'reject')),
       firsts AS (SELECT dst_ip, min(ts) AS first_seen FROM f GROUP BY dst_ip)
-      SELECT f.*, host_of(f.src_ip, f.ts) AS hit_host
+      SELECT f.*, host_of(f.src_ip, f.ts) AS hit_host,
+        f.src_ip || '|newport|' || CAST(f.ts // 3600000 AS VARCHAR) AS hit_key  -- one hit per source per hour
       FROM f JOIN firsts USING (dst_ip)
       WHERE f.dst_port NOT IN (80, 443, 53, 123, 25, 587, 465, 993, 995, 8080, 8443)
         AND firsts.first_seen > getvariable('warmup_end') AND f.ts = firsts.first_seen

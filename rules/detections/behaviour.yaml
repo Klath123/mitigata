@@ -216,3 +216,60 @@ rules:
         AND lc(coalesce(e.signed, '')) IN ('false', 'unsigned', 'unavailable', 'invalid')
         AND NOT regexp_matches(lc(e.process), '^c:\\windows\\(system32|syswow64|winsxs)\\|^c:\\program files')
         AND NOT regexp_matches(lc(e.image_loaded), '^c:\\windows\\(system32|syswow64|winsxs|assembly|microsoft\.net)\\')
+
+  # ---- network behaviour (firewall / flow data): each endpoint is compared with its own normal
+  - id: behav_endpoint_upload_spike
+    title: Endpoint sent far more data to the internet in one hour than it normally does
+    technique: T1048
+    tactic: Exfiltration
+    severity: 0.45
+    kind: behaviour
+    requires: {event_types: [net:flow, fw:flow, zeek:conn], fields: [bytes_out]}
+    sql: |
+      WITH f AS (SELECT e.*, e.ts // 3600000 AS hr__ FROM events e
+                 WHERE e.event_type IN ('net:flow', 'fw:flow', 'zeek:conn') AND is_internal(e.src_ip)
+                   AND is_external(e.dst_ip) AND e.bytes_out IS NOT NULL),
+      h AS (SELECT src_ip, hr__, sum(bytes_out) AS b__ FROM f GROUP BY 1, 2),
+      base AS (SELECT src_ip, quantile_cont(b__, 0.5) AS med__, count(*) AS nh__ FROM h GROUP BY 1),
+      spike AS (SELECT h.src_ip, h.hr__ FROM h JOIN base USING (src_ip)
+                WHERE base.nh__ >= 12 AND h.b__ >= greatest(50 * 1024 * 1024, 20 * base.med__)),
+      top AS (SELECT f.*, row_number() OVER (PARTITION BY f.src_ip, f.hr__ ORDER BY f.bytes_out DESC) AS rn__
+              FROM f JOIN spike USING (src_ip, hr__))
+      SELECT top.* EXCLUDE (hr__, rn__), top.src_ip || '|upload|' || CAST(top.hr__ AS VARCHAR) AS hit_key,
+        CASE WHEN top.dst_port IN (80, 443, 8080, 8443) THEN 'T1041' ELSE 'T1048' END AS technique
+      FROM top WHERE rn__ <= 5
+
+  - id: behav_internal_fanout
+    title: Internal endpoint reaching many internal hosts on admin ports within an hour
+    technique: T1021
+    tactic: Lateral Movement
+    severity: 0.45
+    kind: behaviour
+    requires: {event_types: [net:flow, fw:flow, zeek:conn], fields: [dst_port]}
+    sql: |
+      WITH f AS (SELECT e.*, e.ts // 3600000 AS hr__ FROM events e
+                 WHERE e.event_type IN ('net:flow', 'fw:flow', 'zeek:conn') AND is_internal(e.src_ip)
+                   AND is_internal(e.dst_ip) AND e.src_ip <> e.dst_ip AND e.dst_port IN (22, 135, 139, 445, 3389, 5985, 5986)),
+      h AS (SELECT src_ip, hr__, count(DISTINCT dst_ip) AS n__ FROM f GROUP BY 1, 2),
+      thr AS (SELECT greatest(10, coalesce(quantile_cont(n__, 0.995), 10)) AS t__ FROM h),
+      burst AS (SELECT h.src_ip, h.hr__ FROM h, thr WHERE h.n__ >= thr.t__),
+      one AS (SELECT f.*, row_number() OVER (PARTITION BY f.src_ip, f.hr__, f.dst_ip ORDER BY f.ts) AS rn__
+              FROM f JOIN burst USING (src_ip, hr__))
+      SELECT one.* EXCLUDE (hr__, rn__), one.src_ip || '|fanout|' || CAST(one.hr__ AS VARCHAR) AS hit_key
+      FROM one WHERE rn__ = 1
+
+  - id: behav_offhours_login
+    title: Successful remote/admin login at an hour this account never uses
+    technique: T1078
+    tactic: Initial Access
+    severity: 0.35
+    kind: behaviour
+    requires: {event_types: [auth:success]}
+    sql: |
+      WITH a AS (SELECT e.*, CAST((e.ts // 3600000) % 24 AS INTEGER) AS h__ FROM events e
+                 WHERE e.event_type = 'auth:success' AND e."user" IS NOT NULL AND NOT sys_acct(e."user")
+                   AND (is_external(e.src_ip) OR lc(coalesce(e.action, '')) = 'vpn')),
+      u AS (SELECT "user", count(*) AS n__ FROM a GROUP BY 1),
+      uh AS (SELECT "user", h__, count(*) AS k__ FROM a GROUP BY 1, 2)
+      SELECT a.* EXCLUDE (h__) FROM a JOIN u USING ("user") JOIN uh USING ("user", h__)
+      WHERE u.n__ >= 10 AND uh.k__ = 1

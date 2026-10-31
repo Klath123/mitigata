@@ -2,8 +2,9 @@
 
 python -m engine.hunt.fetch_sigma [--ref master] [--hunting]
 
-Only the Windows and Linux folders are kept (the log sources we ingest); --hunting adds rules-threat-hunting
-(broader, noisier rules that act as weak signals). The converter refuses what it can't run and reports why.
+Kept: every log family the engine can ingest - windows, linux, network (FortiGate, DNS, firewall, Zeek, Cisco),
+web (webserver, proxy), cloud and identity; --hunting adds rules-threat-hunting (broader, noisier, weak signals).
+The converter refuses what it can't run faithfully and reports why, so unused families cost nothing.
 """
 from __future__ import annotations
 
@@ -23,8 +24,7 @@ DEST = os.path.join(RULES_DIR, "sigma", "sigmahq")
 def fetch(ref: str = "master", hunting: bool = False) -> int:
     url = f"https://github.com/SigmaHQ/sigma/archive/{ref}.zip"
     data = urllib.request.urlopen(url, timeout=120).read()
-    keep = ["rules/windows/", "rules/linux/"] + (["rules-threat-hunting/windows/", "rules-threat-hunting/linux/"]
-                                                 if hunting else [])
+    keep = [f"rules/{d}/" for d in ("windows", "linux", "network", "web", "cloud", "identity")] +         (["rules-threat-hunting/windows/", "rules-threat-hunting/linux/"] if hunting else [])
     shutil.rmtree(DEST, ignore_errors=True)
     n = 0
     with zipfile.ZipFile(io.BytesIO(data)) as z:

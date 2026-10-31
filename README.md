@@ -57,6 +57,27 @@ raw logs → [1] ingest → Parquet → [2] DuckDB + entities → data quality �
 
 Every claim is tied to an evidence id `src_file:line`, which `/events/{id}` resolves to the original record.
 
+## Detection pipeline by log family
+
+The engine works out which log families a dataset contains (`quality.json → telemetry`) and every detector pack
+runs only on the families it understands; packs with nothing to read are reported as disabled, never silently
+empty. Each run prints a per-pack coverage table (`stats.json → rules._packs`).
+
+| Log family | Detector packs |
+|---|---|
+| Windows event logs (EVTX, evtx-JSON) | **Hayabusa** (if installed, `ATTACKSTORY_HAYABUSA`) + SigmaHQ windows + behaviour (process, logon, Kerberos) + sequences + our rules |
+| Windows events in other formats (Splunk XML, Winlogbeat) | SigmaHQ windows (our converter) + behaviour + our rules |
+| Linux (auditd, auth.log/syslog, Sysmon for Linux) | SigmaHQ linux + our Linux rules + behaviour + SSH brute-force sequences |
+| Firewall / network (FortiGate, CEF, Zeek, flows, DNS) | SigmaHQ network (FortiGate, DNS, firewall, Zeek, Cisco) + `firewall.yaml` (config tampering, admin access from the internet, country jumps, vendor IPS/AV/web/DNS verdicts, scans) + behaviour (beaconing, DNS tunnelling, new destinations, exfiltration) + sequences (admin brute force) |
+| Web servers / proxies | SigmaHQ web + our web-shell/upload rules |
+| Cloud / identity (AWS, Azure, GCP, Okta) | SigmaHQ cloud/identity rules are fetched but refused until those logs are ingested |
+| Unknown formats | generic parsing, Drain templates, meaning-based typing (`event_semantics`), behaviour on recognised fields |
+
+Shared by all: noise guard (rules firing far above hosts × days only join incidents through strong links),
+warm-up baseline (routine hits are not evidence), correlation into incidents, scoring, evidence-checked reports.
+New vendor = entries in `rules/mappings/fields.yaml` (`value_event_types`, aliases, `event_overrides`), not code.
+SigmaHQ rules: `python -m engine.hunt.fetch_sigma` (git-ignored, DRL 1.1). Benchmarks: `bench/scoreboard.md`.
+
 ## Rules
 
 - `rules/detections/*.yaml` — SQL over the `events` view; header `id, title, technique, sub_technique, tactic, severity, kind`.

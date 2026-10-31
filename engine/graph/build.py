@@ -23,6 +23,7 @@ LOGON_TYPES = {"win:4624", "auth:success", "win:5140", "win:5145"}
 MAX_FANOUT = 60
 HOP_LOOKBACK = 24 * 3_600_000
 SIGMA_STEP_MIN = 0.6                      # Sigma 'high' and above can be incident steps
+NETWORK_TYPES = {"net:flow", "fw:flow", "zeek:conn", "fw:ips", "fw:av", "fw:web", "fw:app", "dns:query"}
 REMOTE_REQUEST = {"win:4769", "win:4768", "win:4776"}   # logged on the DC, naming the requesting host
 # links that only say "near in time / same account / same host"; strong ones (GUID, session, logon hop) always count
 WEAK_LINKS = {"same_account", "same_account_weak", "time_proximity", "compromised_host", "same_external_ip",
@@ -129,6 +130,13 @@ def load_nodes(con: duckdb.DuckDBPyConnection, resolver: IpResolver) -> dict[str
         if not dst_h and r.get("dst_ip") and is_internal(r["dst_ip"]):
             dst_h = resolver.host(r["dst_ip"], r["ts"])
         r["dst_h"] = dst_h
+        if r.get("event_type") in NETWORK_TYPES:
+            # traffic seen by a firewall/sensor belongs to the internal endpoint, not to the device that logged it
+            # (firewall-only datasets have no host names: the internal IP is the entity)
+            ep = (src_h or r["src_ip"]) if is_internal(r.get("src_ip")) else \
+                 ((dst_h or r["dst_ip"]) if is_internal(r.get("dst_ip")) else None)
+            if ep:
+                r["reporter"], r["host"] = r.get("host"), ep
         n.rows.append(r)
     return nodes
 

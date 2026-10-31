@@ -1,0 +1,120 @@
+# Network-device detections (firewalls / VPN gateways: FortiGate, and any vendor mapped to the same types).
+# The device itself is the asset: admin logins, configuration changes and VPN sessions are what an attacker who
+# owns the perimeter leaves behind. Vendor verdicts (IPS / AV / web / DNS filtering) become labelled hits; the
+# noise guard keeps routine verdicts from gluing incidents together.
+rules:
+  - id: fw_config_tamper
+    title: Network device configuration changed (logging disabled, policies deleted or purged)
+    technique: T1562
+    sub_technique: T1562.004
+    tactic: Defense Evasion
+    severity: 0.4
+    kind: known_bad
+    requires: {event_types: [fw:config]}
+    sql: |
+      SELECT e.*,
+        CASE WHEN regexp_matches(lc(coalesce(e.message, '')), '(log|logging|syslog|fortianalyzer|faz).*(disable|delet|purg|off)|disable.*(log|logging)')
+             THEN 'T1562.002'
+             ELSE 'T1562.004' END AS sub_technique,
+        CASE WHEN regexp_matches(lc(coalesce(e.message, '')), 'disable|delet|purg|remov|flush|reset') THEN 0.75
+             ELSE 0.4 END AS hit_severity
+      FROM events e
+      WHERE e.event_type = 'fw:config'
+
+  - id: fw_admin_from_internet
+    title: Administrative access to a network device from the internet side
+    technique: T1078
+    tactic: Initial Access
+    severity: 0.45
+    kind: known_bad
+    requires: {event_types: [auth:success, fw:config]}
+    sql: |
+      WITH a AS (
+        SELECT e.*, lc(coalesce(json_extract_string(e.extra, '$.srcintfrole'), '')) AS role__,
+               coalesce(json_extract_string(e.extra, '$.srccountry'), '') AS ctry__
+        FROM events e
+        WHERE (e.event_type = 'fw:config' OR (e.event_type = 'auth:success' AND lc(coalesce(e.action, '')) <> 'vpn'))
+          AND e.host IS NOT NULL AND e."user" IS NOT NULL AND is_external(e.src_ip)),
+      firsts AS (SELECT "user", ctry__, min(ts) AS f__ FROM a GROUP BY 1, 2)
+      SELECT a.* EXCLUDE (role__, ctry__),
+        a."user" || '|admin|' || a.src_ip AS hit_key,
+        CASE WHEN a.ts = firsts.f__ AND (a.ts > getvariable('warmup_end') OR getvariable('warmup_end') > getvariable('ds_end'))
+             THEN 0.6 ELSE 0.45 END AS hit_severity
+      FROM a JOIN firsts USING ("user", ctry__)
+
+  - id: fw_account_geo_jump
+    title: Same account logged in from two countries within an hour (impossible travel / shared credentials)
+    technique: T1078
+    tactic: Initial Access
+    severity: 0.7
+    kind: known_bad
+    requires: {event_types: [auth:success]}
+    sql: |
+      WITH s AS (
+        SELECT e.*, json_extract_string(e.extra, '$.srccountry') AS c__ FROM events e
+        WHERE e.event_type = 'auth:success' AND e."user" IS NOT NULL AND is_external(e.src_ip)),
+      w AS (SELECT s.*, count(DISTINCT c__) OVER (PARTITION BY "user" ORDER BY ts
+                   RANGE BETWEEN 3600000 PRECEDING AND 3600000 FOLLOWING) AS n__ FROM s
+            WHERE c__ IS NOT NULL AND lc(c__) NOT IN ('reserved', ''))
+      SELECT w.* EXCLUDE (c__, n__), w."user" || '|geo|' || CAST(w.ts // 3600000 AS VARCHAR) AS hit_key,
+        CASE WHEN lc(coalesce(w.action, '')) = 'vpn' THEN 'T1133' ELSE 'T1078' END AS technique
+      FROM w WHERE n__ >= 2
+
+  - id: fw_vendor_verdict
+    title: Threat detected by the firewall's own security engines (IPS / antivirus / web / DNS filter)
+    technique: T1190
+    tactic: Initial Access
+    severity: 0.3
+    kind: vendor
+    requires: {event_types: [fw:ips, fw:av, fw:web, dns:query]}
+    sql: |
+      WITH v AS (
+        SELECT e.*, lc(coalesce(e.rule, '')) AS r__,
+               is_external(e.src_ip) AND NOT is_external(e.dst_ip) AS inbound__
+        FROM events e
+        WHERE e.event_type IN ('fw:ips', 'fw:av')
+           OR (e.event_type = 'fw:web' AND regexp_matches(lc(coalesce(e.rule, '')), 'phish|malicious|spyware|malware|botnet|c&c|command|newly|proxy avoid|hacking'))
+           OR (e.event_type = 'dns:query' AND regexp_matches(lc(coalesce(e.rule, '') || ' ' || coalesce(e.action, '')), 'botnet|c&c|malicious|block|redirect')))
+      SELECT v.* EXCLUDE (r__, inbound__),
+        CASE WHEN v.event_type = 'fw:av' THEN 'T1105'
+             WHEN v.event_type = 'fw:web' AND regexp_matches(r__, 'phish') THEN 'T1566'
+             WHEN v.event_type IN ('fw:web', 'dns:query') THEN 'T1071'
+             WHEN regexp_matches(r__, 'brute.?force|password') THEN 'T1110'
+             WHEN regexp_matches(r__, 'backdoor|beacon|botnet|c2|cobalt|command\.traffic|trojan|rat\b') THEN 'T1071'
+             WHEN regexp_matches(r__, 'scan|zone\.transfer|enum|discovery|probe') THEN 'T1046'
+             WHEN regexp_matches(r__, 'privilege\.escalation|kernel') THEN 'T1068'
+             WHEN regexp_matches(r__, 'eicar|test\.file') THEN 'T1204'
+             WHEN NOT v.inbound__ AND NOT is_external(v.src_ip) AND NOT is_external(v.dst_ip) THEN 'T1210'
+             ELSE 'T1190' END AS technique,
+        CASE WHEN v.event_type = 'fw:av' THEN 'Command and Control'
+             WHEN v.event_type = 'fw:web' AND regexp_matches(r__, 'phish') THEN 'Initial Access'
+             WHEN v.event_type IN ('fw:web', 'dns:query') THEN 'Command and Control'
+             WHEN regexp_matches(r__, 'brute.?force|password') THEN 'Credential Access'
+             WHEN regexp_matches(r__, 'backdoor|beacon|botnet|c2|cobalt|command\.traffic|trojan|rat\b') THEN 'Command and Control'
+             WHEN regexp_matches(r__, 'scan|zone\.transfer|enum|discovery|probe') THEN 'Discovery'
+             WHEN regexp_matches(r__, 'privilege\.escalation|kernel') THEN 'Privilege Escalation'
+             WHEN regexp_matches(r__, 'eicar|test\.file') THEN 'Execution'
+             WHEN NOT v.inbound__ AND NOT is_external(v.src_ip) AND NOT is_external(v.dst_ip) THEN 'Lateral Movement'
+             ELSE 'Initial Access' END AS tactic,
+        CASE lc(coalesce(v.severity, '')) WHEN 'critical' THEN 0.6 WHEN 'high' THEN 0.5 WHEN 'medium' THEN 0.3
+             WHEN 'low' THEN 0.15 WHEN 'alert' THEN 0.5 WHEN 'warning' THEN 0.3 ELSE 0.2 END AS hit_severity
+      FROM v
+
+  - id: fw_port_scan
+    title: One source probing many ports or hosts within minutes (scan / sweep)
+    technique: T1046
+    tactic: Discovery
+    severity: 0.35
+    kind: behaviour
+    requires: {event_types: [net:flow, fw:flow, zeek:conn], fields: [dst_port]}
+    sql: |
+      WITH f AS (SELECT e.*, e.ts // 300000 AS w__ FROM events e
+                 WHERE e.event_type IN ('net:flow', 'fw:flow', 'zeek:conn') AND e.src_ip IS NOT NULL),
+      g AS (SELECT src_ip, w__, count(DISTINCT dst_port) AS np__, count(DISTINCT dst_ip) AS nh__ FROM f GROUP BY 1, 2
+            HAVING count(DISTINCT dst_port) >= 50 OR count(DISTINCT dst_ip) >= 100),
+      one AS (SELECT f.*, row_number() OVER (PARTITION BY f.src_ip, f.w__ ORDER BY f.ts) AS rn__
+              FROM f JOIN g USING (src_ip, w__))
+      SELECT one.* EXCLUDE (w__, rn__), one.src_ip || '|scan|' || CAST(one.w__ AS VARCHAR) AS hit_key,
+        CASE WHEN is_external(one.src_ip) THEN 'Reconnaissance' ELSE 'Discovery' END AS tactic,
+        CASE WHEN is_external(one.src_ip) THEN 'T1595' ELSE 'T1046' END AS technique
+      FROM one WHERE rn__ <= 20

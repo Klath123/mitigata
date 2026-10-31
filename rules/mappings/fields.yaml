@@ -61,7 +61,8 @@ fields:
              destination.bytes, server_bytes, bytes_toclient, ReceivedBytes]
   status: [Status, status, sc-status, http.response.status_code, result, Result, response_code, conn_state]
   severity: [rule.severity, severity, level, Level, priority, Severity, RuleLevel, rule.level]
-  rule: [rule.name, RuleTitle, rule.name, rule_name, signature, alert, rule.description, RuleName, rule]
+  rule: [rule.name, RuleTitle, rule.name, rule_name, signature, alert, rule.description, RuleName, rule, attack, virus,
+         catdesc]
   message: [ScriptBlockText, message, msg, Message, user_agent, cs(User-Agent), useragent, http.user_agent, Payload,
             payload, description, Description]
 
@@ -98,10 +99,34 @@ event_overrides:
   "sysmon:13": {target: [TargetObject], cmdline: [Details]}
   "sysmon:22": {target: [QueryName], dst_host: [QueryName]}
   "ps:4104": {cmdline: [], message: [ScriptBlockText]}
+  # FortiGate UTM: hostname= is the remote site, not the reporting device
+  "fw:web": {host: [devname], dst_host: [hostname], target: [url]}
+  "fw:av": {host: [devname], dst_host: [hostname], target: [url]}
+  "fw:ips": {host: [devname]}
+  "fw:app": {host: [devname], target: [app]}
+  "dns:query": {host: [devname], target: [qname, hostname], dst_host: [qname, hostname]}
 
 # Event-type from an action/category field when the record has no numeric event id (ECS EDRs,
 # Elastic Defend, CrowdStrike-style exports...). Keys are matched case-insensitively against
 # event.action / event_type-like fields. Values reuse the Sysmon-equivalent types the rules know.
+# Event type from field VALUES, for vendors without event ids (FortiGate type/subtype/logdesc). Each entry: all
+# `when` fields must match (case-insensitive regex, field names case-insensitive); the first matching entry wins.
+value_event_types:
+  - {when: {logdesc: 'admin login failed'}, event_type: "auth:fail", action: failure}
+  - {when: {logdesc: 'admin login successful'}, event_type: "auth:success", action: success}
+  - {when: {logdesc: 'ssl vpn tunnel up|vpn tunnel up'}, event_type: "auth:success", action: vpn}
+  - {when: {logdesc: 'ssl vpn.*(fail|deny)|vpn.*login fail'}, event_type: "auth:fail", action: vpn}
+  - {when: {logdesc: 'attribute configured|object .*configured|configured|config.*change|policy.*(add|delet|modif)'},
+     event_type: "fw:config"}
+  - {when: {type: '^utm$', subtype: '^ips$'}, event_type: "fw:ips"}
+  - {when: {type: '^utm$', subtype: '^(virus|av)$'}, event_type: "fw:av"}
+  - {when: {type: '^utm$', subtype: '^webfilter$'}, event_type: "fw:web"}
+  - {when: {type: '^utm$', subtype: '^app-ctrl$'}, event_type: "fw:app"}
+  - {when: {type: '^utm$', subtype: '^dns$'}, event_type: "dns:query"}
+  - {when: {type: '^traffic$'}, event_type: "net:flow"}
+  - {when: {type: '^event$', subtype: '^vpn$'}, event_type: "fw:vpn"}
+  - {when: {type: '^event$'}, event_type: "fw:event"}
+
 action_event_types:
   process_created: "sysmon:1"
   process_start: "sysmon:1"

@@ -211,6 +211,9 @@ class Mapper:
                           for et, ov in (cfg.get("event_overrides") or {}).items()}
         self.channel_prefix = {k.lower(): v for k, v in (cfg.get("channel_prefix") or {}).items()}
         self.action_types = {str(k).lower(): v for k, v in (cfg.get("action_event_types") or {}).items()}
+        self.value_types = [([(f.lower(), re.compile(str(rx), re.I)) for f, rx in (t.get("when") or {}).items()],
+                             t["event_type"], t.get("action"))
+                            for t in cfg.get("value_event_types") or [] if t.get("when") and t.get("event_type")]
         self.logon_names = {str(k).lower(): int(v) for k, v in (cfg.get("logon_type_names") or {}).items()}
         self.patterns = []
         for p in cfg.get("message_patterns") or []:
@@ -355,6 +358,15 @@ class Mapper:
                         break
                 et = f"{pref}:{eidn}"
                 type_source = "native"
+        if not et and self.value_types:
+            # vendors without event ids (FortiGate type/subtype/logdesc...): the first matching row of the table wins
+            low = {k.lower(): str(v) for k, v in rec.items() if v is not None and not isinstance(v, (dict, list))}
+            for conds, vet, vact in self.value_types:
+                if all(f in low and rx.search(low[f]) for f, rx in conds):
+                    et, type_source = vet, "native"
+                    if vact and "action" not in raw:
+                        raw["action"] = vact
+                    break
         if et and et in self.overrides:
             for canon, ks in self._override_plan(keys, et).items():
                 if not self.overrides[et][canon]:

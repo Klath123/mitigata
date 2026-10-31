@@ -352,6 +352,9 @@ def parse_leef(lines, ctx):
         yield n, off, rec, text
 
 
+_TZ_OFFSET = re.compile(r"[+-]\d{2}:?\d{2}")
+
+
 def parse_kvlines(lines, ctx):
     for n, off, text in lines:
         if not text.strip():
@@ -360,9 +363,15 @@ def parse_kvlines(lines, ctx):
         if not rec:
             yield n, off, None, text
             continue
-        # FortiGate style split date= time=
-        if "date" in rec and "time" in rec and "ts" not in rec:
-            rec["ts"] = f"{rec['date']} {rec['time']}"
+        # FortiGate: eventtime is the exact epoch (s/ms/us/ns, UTC); date= time= are local time, offset in tz=
+        if "ts" not in rec:
+            et = str(rec.get("eventtime", ""))
+            if et.isdigit() and len(et) >= 10:
+                rec["ts"] = et
+            elif "date" in rec and "time" in rec:
+                tz = str(rec.get("tz", "")).strip('"')
+                tz = tz if _TZ_OFFSET.fullmatch(tz) else ""
+                rec["ts"] = f"{rec['date']} {rec['time']}{tz}"
         yield n, off, rec, text
 
 

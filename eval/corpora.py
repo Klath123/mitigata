@@ -93,9 +93,10 @@ def otrf(bench: str, out: str) -> None:
 
 LFS_SIZE = re.compile(rb"^size (\d+)$", re.M)
 WIN_LOG = re.compile(r"(sysmon|security|powershell)[^/]*\.log$", re.I)
+LINUX_LOG = re.compile(r"(linux_auditd|auditd|sysmon_linux|linux[-_]sysmon|linux[-_]secure|auth\.log|syslog)[^/]*\.log$", re.I)
 
 
-def splunk(bench: str, out: str, budget_mb: int) -> None:
+def splunk(bench: str, out: str, budget_mb: int, name: str = "splunk", pattern: re.Pattern = WIN_LOG) -> None:
     """Splunk attack_data: technique folder = label. Picks Windows Sysmon/Security/PowerShell logs (smallest first,
     one recording per technique folder first) within a download budget, then pulls only those LFS objects."""
     repo = os.path.join(bench, "attack_data")
@@ -109,7 +110,7 @@ def splunk(bench: str, out: str, budget_mb: int) -> None:
         for ds in d.get("datasets") or []:
             rel = (ds.get("path") or "").lstrip("/")
             p = os.path.join(repo, rel)
-            if not techs or not WIN_LOG.search(rel) or not os.path.exists(p):
+            if not techs or not pattern.search(rel) or not os.path.exists(p)                     or (pattern is WIN_LOG and LINUX_LOG.search(rel)):
                 continue
             head = open(p, "rb").read(200)
             m = LFS_SIZE.search(head)
@@ -129,11 +130,11 @@ def splunk(bench: str, out: str, budget_mb: int) -> None:
             break
         picked.append(c)
         total += c[0]
-    print(f"splunk: pulling {len(picked)} files, {total / 2**20:.0f} MB")
+    print(f"{name}: pulling {len(picked)} files, {total / 2**20:.0f} MB")
     for i in range(0, len(picked), 100):
         inc = ",".join(c[1] for c in picked[i:i + 100])
         subprocess.run(["git", "lfs", "pull", "--include", inc], cwd=repo, check=False)
-    dst = os.path.join(out, "splunk")
+    dst = os.path.join(out, name)
     units = {}
     for size, rel, techs, yml in picked:
         p = os.path.join(repo, rel)
@@ -143,7 +144,7 @@ def splunk(bench: str, out: str, budget_mb: int) -> None:
         os.makedirs(os.path.join(dst, unit), exist_ok=True)
         shutil.copy(p, os.path.join(dst, unit, os.path.basename(rel)))
         units[unit] = {"techniques": sorted(set(techs)), "tactics": [], "source": yml}
-    _write(out, "splunk", units)
+    _write(out, name, units)
 
 
 def main(argv=None):
@@ -161,6 +162,8 @@ def main(argv=None):
         otrf(a.bench, out)
     if "splunk" in only:
         splunk(a.bench, out, a.splunk_budget_mb)
+    if "splunk_linux" in only:                         # Linux auditd / Sysmon-for-Linux recordings
+        splunk(a.bench, out, a.splunk_budget_mb, "splunk_linux", LINUX_LOG)
 
 
 if __name__ == "__main__":
