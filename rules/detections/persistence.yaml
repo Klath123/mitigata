@@ -1,0 +1,98 @@
+rules:
+  - id: run_key
+    title: Registry Run key written
+    technique: T1547
+    sub_technique: T1547.001
+    tactic: Persistence
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE e.event_type IN ('sysmon:13', 'sysmon:12', 'win:4657')
+        AND regexp_matches(lc(e.target), '\\currentversion\\(run|runonce|runservices|runonceex|policies\\explorer\\run)(\\|$)')
+        AND bn(e.process) NOT IN ('msiexec.exe', 'onedrivesetup.exe', 'teams.exe', 'update.exe')
+
+  - id: account_created
+    title: User account created
+    technique: T1136
+    tactic: Persistence
+    severity: medium
+    kind: known_bad
+    sql: |
+      SELECT e.*,
+        CASE WHEN e.event_type = 'account:create' THEN 'T1136.001'
+             WHEN role_of(e.host) = 'dc' THEN 'T1136.002' ELSE 'T1136.001' END AS sub_technique
+      FROM events e
+      WHERE e.event_type IN ('win:4720', 'account:create')
+         OR (is_proc(e.event_type) AND regexp_matches(lc(e.cmdline), '\bnet1?(\.exe)?\s+user\s+\S+\s+\S*\s*/add|useradd\s|new-localuser|new-aduser'))
+
+  - id: privileged_group_add
+    title: Account added to a privileged group
+    technique: T1098
+    tactic: Persistence
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE (e.event_type IN ('win:4728', 'win:4732', 'win:4756', 'account:group_add')
+             AND lc(e."group") IN ('domain admins', 'enterprise admins', 'administrators', 'schema admins',
+                                  'backup operators', 'account operators', 'server operators', 'dnsadmins',
+                                  'group policy creator owners', 'remote desktop users', 'sudo', 'wheel', 'root', 'adm'))
+         OR (is_proc(e.event_type) AND regexp_matches(lc(e.cmdline),
+             'net1?(\.exe)?\s+(local)?group\s+"?(domain admins|enterprise admins|administrators)"?\s+\S+\s+/add|usermod\s+-a?g\s*(sudo|wheel|root)|add-adgroupmember'))
+
+  - id: web_shell_file
+    title: Server-side script written into a web directory
+    technique: T1505
+    sub_technique: T1505.003
+    tactic: Persistence
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE e.event_type IN ('audit:write', 'sysmon:11')
+        AND regexp_matches(lc(e.target), '(/var/www|/srv/www|/usr/share/nginx|htdocs|wwwroot|inetpub|/uploads?/|\\uploads?\\).*\.(php\d?|phtml|phar|jsp|jspx|aspx?|ashx|asmx|cgi|pl|cfm)$')
+
+  - id: web_shell_request
+    title: Request to an uploaded script with a command parameter
+    technique: T1505
+    sub_technique: T1505.003
+    tactic: Persistence
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.*, e.src_ip AS hit_key FROM events e
+      WHERE e.event_type = 'web:req'
+        AND regexp_matches(lc(e.target), '\.(php\d?|phtml|jsp|jspx|aspx?|ashx|cgi)\?.*\b(cmd|exec|command|c|shell|run|e|q)=')
+        AND coalesce(e.status, '200') LIKE '2%'
+
+  - id: cron_write
+    title: Cron job file written
+    technique: T1053
+    sub_technique: T1053.003
+    tactic: Persistence
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.*,
+        CASE WHEN shell_bin(bn(e.process)) OR bn(e.process) IN ('echo','tee','cat','cp','mv','python3','perl','curl','wget')
+             THEN 0.8 ELSE 0.4 END AS hit_severity
+      FROM events e
+      WHERE e.event_type = 'audit:write'
+        AND regexp_matches(lc(e.target), '^/etc/cron|^/var/spool/cron|^/etc/crontab|^/etc/anacrontab')
+
+  - id: systemd_or_ssh_persistence
+    title: systemd unit or authorized_keys written
+    technique: T1543
+    sub_technique: T1543.002
+    tactic: Persistence
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.*,
+        CASE WHEN lc(e.target) LIKE '%authorized_keys%' THEN 'T1098' ELSE 'T1543' END AS technique,
+        CASE WHEN lc(e.target) LIKE '%authorized_keys%' THEN 'T1098.004' ELSE 'T1543.002' END AS sub_technique
+      FROM events e
+      WHERE e.event_type = 'audit:write'
+        AND regexp_matches(lc(e.target), '^/etc/systemd/system/.*\.service$|^/lib/systemd/system/.*\.service$|/\.ssh/authorized_keys')
+        AND bn(e.process) NOT IN ('dpkg', 'apt', 'yum', 'dnf', 'rpm', 'systemctl', 'sshd')

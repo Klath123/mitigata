@@ -1,0 +1,72 @@
+rules:
+  - id: admin_network_logon_new
+    title: First-time privileged network logon (account -> host) after the baseline period
+    technique: T1021
+    sub_technique: T1021.002
+    tactic: Lateral Movement
+    severity: medium
+    kind: rarity
+    sql: |
+      WITH l AS (
+        SELECT e.*, coalesce(e.src_host, host_of(e.src_ip, e.ts)) AS src_h
+        FROM events e
+        WHERE e.event_type = 'win:4624' AND e.logon_type = 3 AND NOT sys_acct(e.user)
+          AND e.src_ip IS NOT NULL AND is_internal(e.src_ip)),
+      adm AS (
+        SELECT DISTINCT host, logon_id FROM events
+        WHERE event_type = 'win:4672' AND logon_id IS NOT NULL),
+      la AS (
+        SELECT l.* FROM l JOIN adm ON l.host = adm.host AND l.logon_id = adm.logon_id
+        WHERE coalesce(l.src_h, '') <> l.host),
+      firsts AS (
+        SELECT la.*, min(ts) OVER (PARTITION BY user, host) AS first_ts FROM la)
+      SELECT f.* EXCLUDE (src_h, first_ts),
+        CASE WHEN role_of(f.src_h) IN ('workstation', 'web', 'gateway') OR role_of(f.src_h) IS NULL THEN 0.6 ELSE 0.4 END AS hit_severity
+      FROM firsts f
+      WHERE f.ts = f.first_ts AND f.ts > getvariable('warmup_end')
+
+  - id: network_logon_new
+    title: First-time network/RDP/SSH logon (account -> host) from an internal source after the baseline period
+    technique: T1021
+    sub_technique: T1021.002
+    tactic: Lateral Movement
+    severity: low
+    kind: rarity
+    sql: |
+      WITH l AS (
+        SELECT e.*, coalesce(e.src_host, host_of(e.src_ip, e.ts)) AS src_h
+        FROM events e
+        WHERE ((e.event_type = 'win:4624' AND e.logon_type IN (3, 10)) OR e.event_type = 'auth:success')
+          AND NOT sys_acct(e.user) AND e.src_ip IS NOT NULL AND is_internal(e.src_ip)),
+      firsts AS (SELECT l.*, min(ts) OVER (PARTITION BY user, host) AS first_ts FROM l)
+      SELECT f.* EXCLUDE (src_h, first_ts),
+        CASE WHEN f.logon_type = 10 THEN 'T1021.001' WHEN f.event_type = 'auth:success' THEN 'T1021.004'
+             ELSE 'T1021.002' END AS sub_technique,
+        CASE WHEN role_of(f.src_h) IN ('web', 'gateway') THEN 0.7
+             WHEN f.logon_type = 10 THEN 0.4 ELSE 0.25 END AS hit_severity
+      FROM firsts f
+      WHERE f.ts = f.first_ts AND f.ts > getvariable('warmup_end') AND coalesce(f.src_h, '') <> f.host
+
+  - id: admin_share_access
+    title: Admin share (ADMIN$/C$) accessed over the network by a user account
+    technique: T1021
+    sub_technique: T1021.002
+    tactic: Lateral Movement
+    severity: medium
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE e.event_type IN ('win:5140', 'win:5145') AND regexp_matches(lc(e.target), '\\(admin|c|ipc)\$$')
+        AND lc(e.target) NOT LIKE '%ipc$' AND NOT sys_acct(e.user)
+
+  - id: remote_exec_tool
+    title: Remote execution tool command line (PsExec, wmic /node, winrs, Invoke-Command)
+    technique: T1021
+    sub_technique: T1021.002
+    tactic: Lateral Movement
+    severity: medium
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE is_proc(e.event_type)
+        AND regexp_matches(lc(e.cmdline), 'psexec(64)?(\.exe)?\s+\\\\\\\\|paexec|wmic.*/node:|winrs\s|invoke-command\s.*-computername|enter-pssession|smbexec|wmiexec|atexec|smbclient\s+//')

@@ -1,0 +1,111 @@
+rules:
+  - id: archive_creation
+    title: Archive created with an archiver (password / server / share data = higher severity)
+    technique: T1560
+    sub_technique: T1560.001
+    tactic: Collection
+    severity: medium
+    kind: known_bad
+    sql: |
+      SELECT e.*,
+        CASE WHEN regexp_matches(lc(e.cmdline), '\s-p\S|\s-hp|-mhe|--password|\\\\\\\\|\\shares?\\|[a-z]:\\shares?')
+               OR role_of(e.host) NOT IN ('workstation') THEN 0.75 ELSE 0.2 END AS hit_severity
+      FROM events e
+      WHERE is_proc(e.event_type)
+        AND (bn(e.process) IN ('7z.exe', '7za.exe', '7zr.exe', '7zg.exe', 'rar.exe', 'winrar.exe', 'makecab.exe',
+                                'zip', '7z', '7za', 'rar')
+             OR regexp_matches(lc(e.cmdline), 'compress-archive|\btar\s+-?[a-z]*c[a-z]*z?f|\bzip\s+-r'))
+        AND regexp_matches(lc(e.cmdline), '\s(a|-a|u)\s|compress-archive|tar|zip\s+-r|makecab')
+
+  - id: archive_file_on_server
+    title: Archive file written on a server by a non-shell process
+    technique: T1560
+    sub_technique: T1560.001
+    tactic: Collection
+    severity: medium
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE e.event_type = 'sysmon:11' AND regexp_matches(lc(e.target), '\.(7z|rar|zip|tar|tgz|gz|cab)$')
+        AND coalesce(role_of(e.host), 'workstation') <> 'workstation'
+        AND bn(e.process) NOT IN ('explorer.exe', 'msiexec.exe', 'trustedinstaller.exe', 'svchost.exe')
+
+  - id: exfil_large_new_destination
+    title: Large outbound transfer from an internal host to a never-before-seen external IP
+    technique: T1041
+    tactic: Exfiltration
+    severity: high
+    kind: rarity
+    sql: |
+      WITH f AS (
+        SELECT e.* FROM events e
+        WHERE e.bytes_out IS NOT NULL AND e.src_ip IS NOT NULL AND e.dst_ip IS NOT NULL
+          AND is_internal(e.src_ip) AND is_external(e.dst_ip)
+          AND e.event_type IN ('net:flow', 'zeek:conn', 'csv', 'kv')),
+      dst_first AS (SELECT dst_ip, min(ts) AS first_seen, count(DISTINCT src_ip) AS n_src FROM f GROUP BY dst_ip),
+      base AS (SELECT quantile_cont(bytes_out, 0.999) AS p999 FROM f),
+      grp AS (
+        SELECT f.*, sum(f.bytes_out) OVER (PARTITION BY f.src_ip, f.dst_ip, f.ts // 3600000) AS win_bytes
+        FROM f)
+      SELECT g.* EXCLUDE (win_bytes),
+        g.src_ip || '>' || g.dst_ip || '@' || CAST(g.ts // 3600000 AS VARCHAR) AS hit_key,
+        host_of(g.src_ip, g.ts) AS hit_host,
+        CASE WHEN g.dst_port IN (80, 443, 8080, 8443) THEN 'T1041' ELSE 'T1048' END AS technique
+      FROM grp g JOIN dst_first d ON g.dst_ip = d.dst_ip, base
+      WHERE g.win_bytes >= greatest(100 * 1024 * 1024, base.p999)
+        AND d.first_seen > getvariable('warmup_end') AND d.n_src <= 2
+
+  - id: script_host_external_network
+    title: Script host / LOLBin talking to the internet
+    technique: T1105
+    tactic: Command and Control
+    severity: medium
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE e.event_type IN ('sysmon:3', 'sysmon:22')
+        AND script_host(bn(e.process))
+        AND (is_external(e.dst_ip) OR (e.event_type = 'sysmon:22' AND e.target LIKE '%.%'
+             AND NOT regexp_matches(lc(e.target), '\.(local|lan|corp|internal|arpa)$|microsoft\.com$|windowsupdate\.com$')))
+
+  - id: script_written_to_temp
+    title: Script or binary dropped into a user-writable folder by a script host
+    technique: T1105
+    tactic: Command and Control
+    severity: medium
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE e.event_type = 'sysmon:11' AND script_host(bn(e.process))
+        AND regexp_matches(lc(e.target), '\\(temp|tmp|public|programdata|appdata)\\.*\.(ps1|exe|dll|bat|vbs|js|hta|scr|cmd)$')
+
+  - id: shell_outbound_connection
+    title: Shell or interpreter opened an outbound connection to the internet
+    technique: T1095
+    tactic: Command and Control
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE e.event_type IN ('audit:connect', 'sysmon:3')
+        AND (shell_bin(bn(e.process)) OR bn(e.process) IN ('python', 'python3', 'perl', 'php', 'ruby', 'nc', 'ncat'))
+        AND is_external(e.dst_ip)
+        AND NOT (e.event_type = 'sysmon:3' AND e.dst_port IN (80, 443))
+
+  - id: new_external_uncommon_port
+    title: Internal host connected to a new external IP on an uncommon port
+    technique: T1095
+    tactic: Command and Control
+    severity: medium
+    kind: rarity
+    sql: |
+      WITH f AS (
+        SELECT e.* FROM events e
+        WHERE e.src_ip IS NOT NULL AND is_internal(e.src_ip) AND is_external(e.dst_ip)
+          AND e.event_type IN ('net:flow', 'zeek:conn', 'csv', 'kv')
+          AND coalesce(lc(e.action), 'allow') NOT IN ('deny', 'drop', 'block', 'blocked', 'reject')),
+      firsts AS (SELECT dst_ip, min(ts) AS first_seen FROM f GROUP BY dst_ip)
+      SELECT f.*, host_of(f.src_ip, f.ts) AS hit_host
+      FROM f JOIN firsts USING (dst_ip)
+      WHERE f.dst_port NOT IN (80, 443, 53, 123, 25, 587, 465, 993, 995, 8080, 8443)
+        AND firsts.first_seen > getvariable('warmup_end') AND f.ts = firsts.first_seen

@@ -1,0 +1,31 @@
+rules:
+  - id: discovery_commands
+    title: Discovery command (severity rises when several run in a burst)
+    technique: T1087
+    tactic: Discovery
+    severity: low
+    kind: known_bad
+    sql: |
+      WITH d AS (
+        SELECT e.*,
+          CASE
+            WHEN regexp_matches(lc(e.cmdline), 'nltest.*(domain_trusts|trusted_domains)|dsquery.*trust|get-adtrust') THEN 'T1482'
+            WHEN regexp_matches(lc(e.cmdline), 'nltest.*(dclist|dsgetdc)|\bnet1?(\.exe)?\s+view|dsquery\s+computer|get-adcomputer|net1?(\.exe)?\s+group\s+"?domain (computers|controllers)') THEN 'T1018'
+            WHEN regexp_matches(lc(e.cmdline), '\bnet1?(\.exe)?\s+(user|group|localgroup|accounts)\b|dsquery\s+user|get-aduser|get-localuser|cat\s+/etc/passwd|getent\s+passwd') THEN 'T1087'
+            WHEN regexp_matches(lc(e.cmdline), '\bdir\b.*(/s|\\\\\\\\)|\btree\b\s+/f|get-childitem.*-recurse|\bfind\s+/\s|\bls\s+-[a-z]*r') THEN 'T1083'
+            WHEN regexp_matches(lc(e.cmdline), '^"?(whoami|id)(\.exe)?"?(\s|$)|\bwhoami\b|\bquser\b|query\s+user') THEN 'T1033'
+            WHEN regexp_matches(lc(e.cmdline), '\bsysteminfo\b|^uname\b|\bhostnamectl\b|cat\s+/etc/(os-release|issue)') THEN 'T1082'
+            WHEN regexp_matches(lc(e.cmdline), '\bipconfig\b|\bifconfig\b|\bip\s+a(ddr)?\b|\barp\s+-a|\broute\s+print') THEN 'T1016'
+            WHEN regexp_matches(lc(e.cmdline), '\bnetstat\b|\bss\s+-[a-z]*t') THEN 'T1049'
+            WHEN regexp_matches(lc(e.cmdline), '\btasklist\b|\bps\s+(aux|-ef)') THEN 'T1057'
+            WHEN regexp_matches(lc(e.cmdline), '\bnet1?(\.exe)?\s+share\b|get-smbshare') THEN 'T1135'
+          END AS technique
+        FROM events e
+        WHERE is_proc(e.event_type) AND e.cmdline IS NOT NULL
+      )
+      SELECT d.*,
+        CASE WHEN technique = 'T1087' AND regexp_matches(lc(cmdline), '/domain|dsquery|get-aduser') THEN 'T1087.002'
+             WHEN technique = 'T1087' THEN 'T1087.001' END AS sub_technique,
+        CASE WHEN count(DISTINCT lc(cmdline)) OVER (PARTITION BY host, user ORDER BY ts
+                   RANGE BETWEEN 900000 PRECEDING AND 900000 FOLLOWING) >= 3 THEN 0.5 ELSE 0.2 END AS hit_severity
+      FROM d WHERE technique IS NOT NULL

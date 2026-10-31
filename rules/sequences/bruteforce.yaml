@@ -1,0 +1,71 @@
+# Sequence rules: a small DSL compiled to window-function SQL.
+#   first:     SQL condition on the first events (alias e)
+#   by:        columns that must match between first and then events
+#   min_count: minimum number of `first` events in one burst
+#   gap:       events closer than this belong to the same burst (s/m/h)
+#   then:      optional SQL condition for the follow-up event
+#   within:    the follow-up must start no later than this after the burst ends
+#   emit:      first | then | both  (which rows become the hit's evidence)
+#   min_distinct: optional {column: n}, e.g. distinct users for password spraying
+#   then_same_source: (default true) the follow-up must come from one of the failing source IPs
+rules:
+  - id: brute_force_then_success
+    title: Burst of failed logons followed by a success for the same account
+    technique: T1110
+    sub_technique: T1110.001
+    tactic: Credential Access
+    severity: high
+    kind: sequence
+    sequence:
+      first: "is_logon_fail(e.event_type) AND e.user IS NOT NULL"
+      by: [host, user]
+      min_count: 8
+      gap: 5m
+      then: "is_logon_ok(e.event_type) AND (e.event_type <> 'win:4624' OR e.logon_type IN (2, 3, 7, 8, 10, 11))"
+      within: 30m
+      emit: first
+
+  - id: valid_account_after_brute_force
+    title: Logon that succeeded right after a brute-force burst
+    technique: T1078
+    sub_technique: T1078.002
+    tactic: Initial Access
+    severity: high
+    kind: sequence
+    sequence:
+      first: "is_logon_fail(e.event_type) AND e.user IS NOT NULL"
+      by: [host, user]
+      min_count: 8
+      gap: 5m
+      then: "is_logon_ok(e.event_type) AND (e.event_type <> 'win:4624' OR e.logon_type IN (2, 3, 7, 8, 10, 11))"
+      within: 30m
+      emit: then
+
+  - id: brute_force_attempt
+    title: Burst of failed logons with no success (scanning / guessing)
+    technique: T1110
+    sub_technique: T1110.001
+    tactic: Credential Access
+    severity: low
+    kind: sequence
+    sequence:
+      first: "is_logon_fail(e.event_type) AND e.user IS NOT NULL"
+      by: [host, user]
+      min_count: 20
+      gap: 5m
+      emit: first
+
+  - id: password_spray
+    title: One source failing logons for many different accounts
+    technique: T1110
+    sub_technique: T1110.003
+    tactic: Credential Access
+    severity: medium
+    kind: sequence
+    sequence:
+      first: "is_logon_fail(e.event_type) AND e.src_ip IS NOT NULL AND e.user IS NOT NULL"
+      by: [src_ip]
+      min_count: 10
+      min_distinct: {user: 8}
+      gap: 10m
+      emit: first

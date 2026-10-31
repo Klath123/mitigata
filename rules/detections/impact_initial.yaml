@@ -1,0 +1,83 @@
+rules:
+  - id: inhibit_recovery
+    title: Shadow copies / backups / recovery deleted
+    technique: T1490
+    tactic: Impact
+    severity: critical
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE is_proc(e.event_type)
+        AND regexp_matches(lc(e.cmdline), 'vssadmin.*delete\s+shadows|vssadmin.*resize\s+shadowstorage|wmic.*shadowcopy.*delete|wbadmin.*delete\s+(catalog|systemstatebackup|backup)|bcdedit.*recoveryenabled\s+no|bcdedit.*bootstatuspolicy\s+ignoreallfailures|win32_shadowcopy.*delete|remove-wmiobject.*shadowcopy')
+
+  - id: mass_file_encryption
+    title: Mass file renames to an unusual extension (ransomware)
+    technique: T1486
+    tactic: Impact
+    severity: critical
+    kind: known_bad
+    sql: |
+      WITH f AS (
+        SELECT e.*, lower(regexp_extract(e.target, '\.([A-Za-z0-9_-]{2,12})$', 1)) AS ext,
+               regexp_matches(lc(e.target), '\.[a-z0-9]{2,5}\.[a-z0-9_-]{2,12}$') AS dbl
+        FROM events e WHERE e.event_type IN ('sysmon:11', 'sysmon:2', 'audit:write', 'audit:rename')),
+      b AS (
+        SELECT f.*, count(*) OVER (PARTITION BY host, process, ext, ts // 300000) AS n,
+               avg(CASE WHEN dbl THEN 1 ELSE 0 END) OVER (PARTITION BY host, process, ext, ts // 300000) AS dbl_share
+        FROM f)
+      SELECT b.* EXCLUDE (ext, dbl, n, dbl_share),
+             host || '|' || ext || '|' || CAST(ts // 300000 AS VARCHAR) AS hit_key
+      FROM b
+      WHERE n >= 50 AND dbl_share >= 0.7
+        AND ext NOT IN ('tmp', 'log', 'etl', 'pf', 'dat', 'db', 'lnk', 'ini', 'xml', 'json', 'js', 'css', 'png',
+                        'jpg', 'gif', 'html', 'htm', 'txt', 'cache', 'crdownload', 'partial', 'bak', 'old', 'gz')
+
+  - id: log_cleared
+    title: Event log cleared
+    technique: T1070
+    sub_technique: T1070.001
+    tactic: Defense Evasion
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE e.event_type IN ('win:1102', 'win:104')
+         OR (is_proc(e.event_type) AND regexp_matches(lc(e.cmdline), 'wevtutil(\.exe)?\s+(cl|clear-log)|clear-eventlog|remove-eventlog|history\s+-c|rm\s+.*(/var/log|\.bash_history)'))
+
+  - id: external_logon_success
+    title: Successful logon from an internet IP
+    technique: T1078
+    tactic: Initial Access
+    severity: medium
+    kind: known_bad
+    sql: |
+      SELECT e.*,
+        CASE WHEN e.event_type = 'win:4624' THEN 'T1078.002' ELSE 'T1078.003' END AS sub_technique
+      FROM events e
+      WHERE is_logon_ok(e.event_type) AND is_external(e.src_ip)
+        AND (e.event_type <> 'win:4624' OR e.logon_type IN (2, 3, 7, 8, 9, 10, 11))
+
+  - id: web_upload_then_script
+    title: Upload that was followed by requests to a newly seen server-side script from the same client
+    technique: T1190
+    tactic: Initial Access
+    severity: high
+    kind: known_bad
+    sql: |
+      WITH w AS (SELECT e.* FROM events e WHERE e.event_type = 'web:req' AND e.src_ip IS NOT NULL),
+      path_first AS (
+        SELECT regexp_extract(target, '^[^?]*') AS p, min(ts) AS first_seen FROM w GROUP BY 1),
+      gets AS (
+        SELECT w.*, regexp_extract(w.target, '^[^?]*') AS p FROM w
+        WHERE regexp_matches(lc(regexp_extract(w.target, '^[^?]*')), '\.(php\d?|phtml|jsp|jspx|aspx?|ashx|cgi)$')
+          AND coalesce(w.status, '200') LIKE '2%'),
+      newp AS (
+        SELECT g.* FROM gets g JOIN path_first pf ON g.p = pf.p
+        WHERE pf.first_seen > getvariable('warmup_end') AND regexp_matches(lc(g.p), '/(uploads?|files|images|tmp|media|static)/')),
+      posts AS (
+        SELECT w.* FROM w WHERE w.action = 'POST' AND coalesce(w.status, '200') LIKE '2%')
+      SELECT p.* , p.src_ip AS hit_key FROM posts p
+      WHERE EXISTS (SELECT 1 FROM newp n WHERE n.src_ip = p.src_ip AND n.host = p.host
+                    AND n.ts BETWEEN p.ts AND p.ts + 1800000)
+        AND p.ts >= (SELECT max(p2.ts) FROM posts p2 WHERE p2.src_ip = p.src_ip AND p2.host = p.host
+                     AND p2.ts <= (SELECT min(n2.ts) FROM newp n2 WHERE n2.src_ip = p.src_ip))

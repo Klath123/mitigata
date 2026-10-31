@@ -1,0 +1,24 @@
+# Detections that arrive already tagged by the source (EDR / SIEM / Wazuh): trusted first-pass labels.
+# Matches any unmapped field path ending in technique.id / mitre.id / technique_id holding a T-number.
+rules:
+  - id: vendor_alert
+    title: Detection reported by the log source
+    technique: null
+    tactic: null
+    severity: medium
+    kind: vendor
+    sql: |
+      WITH v AS (
+        SELECT e.*,
+          regexp_extract(e.extra, '"[^"]*(?:technique\.id|mitre\.id|technique_id|attack_id)": ?"(T\d{4}(?:\.\d{3})?)', 1) AS tid,
+          nullif(regexp_extract(e.extra, '"[^"]*(?:tactic\.name|mitre\.tactic|tactic)": ?"([^",\]]+)', 1), '') AS tac
+        FROM events e
+        WHERE e.extra IS NOT NULL
+          AND regexp_matches(e.extra, '"[^"]*(?:technique\.id|mitre\.id|technique_id|attack_id)": ?"T\d{4}'))
+      SELECT v.* EXCLUDE (tid, tac),
+        split_part(tid, '.', 1) AS technique,
+        CASE WHEN tid LIKE '%.%' THEN tid END AS sub_technique,
+        tac AS tactic,
+        CASE lc(v.severity) WHEN 'critical' THEN 1.0 WHEN 'high' THEN 0.75 WHEN 'medium' THEN 0.5
+             WHEN 'low' THEN 0.25 WHEN 'informational' THEN 0.1 ELSE 0.5 END AS hit_severity
+      FROM v WHERE tid <> ''

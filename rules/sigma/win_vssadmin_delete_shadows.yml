@@ -1,0 +1,22 @@
+title: Shadow Copies Deletion Using Operating Systems Utilities
+id: c947b146-0abc-4c87-9c64-b17e9d7274a2
+status: stable
+description: Example Sigma rule loaded from config (B-4). Drop more Sigma rules into rules/sigma/.
+tags:
+  - attack.impact
+  - attack.t1490
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_img:
+    Image|endswith:
+      - '\vssadmin.exe'
+      - '\wmic.exe'
+      - '\wbadmin.exe'
+  selection_cli:
+    CommandLine|contains|all:
+      - 'shadow'
+      - 'delete'
+  condition: all of selection_*
+level: high

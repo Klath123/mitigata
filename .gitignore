@@ -1,0 +1,21 @@
+# datasets and run outputs (large, regenerated)
+data/
+results/
+*.parquet
+*.duckdb
+*.duckdb.wal
+spill/
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# secrets
+.env

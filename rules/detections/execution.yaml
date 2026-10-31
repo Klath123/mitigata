@@ -1,0 +1,141 @@
+rules:
+  - id: office_spawns_script_host
+    title: Office application spawned a script host
+    technique: T1204
+    sub_technique: T1204.002
+    tactic: Execution
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE is_proc(e.event_type)
+        AND bn(e.parent) IN ('winword.exe','excel.exe','powerpnt.exe','outlook.exe','msaccess.exe','mspub.exe',
+                             'visio.exe','onenote.exe')
+        AND script_host(bn(e.process))
+
+  - id: encoded_powershell
+    title: PowerShell with an encoded command
+    technique: T1059
+    sub_technique: T1059.001
+    tactic: Execution
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE is_proc(e.event_type) AND bn(e.process) IN ('powershell.exe','pwsh.exe','pwsh')
+        AND regexp_matches(lc(e.cmdline), '\s[-/]e(c|n|nc|nco|ncod|ncode|ncoded|ncodedc|ncodedcommand)?\s+[a-z0-9+/=]{16,}')
+
+  - id: powershell_download_cradle
+    title: PowerShell download cradle / in-memory execution
+    technique: T1059
+    sub_technique: T1059.001
+    tactic: Execution
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE (e.event_type = 'ps:4104' OR (is_proc(e.event_type) AND bn(e.process) IN ('powershell.exe','pwsh.exe')))
+        AND regexp_matches(lc(coalesce(e.message, e.cmdline)),
+            'downloadstring|downloadfile|downloaddata|invoke-webrequest|\biwr\b|net\.webclient|start-bitstransfer|'
+            'invoke-expression|\biex\s*[\(\$]|frombase64string|invoke-shellcode|reflection\.assembly')
+
+  - id: suspicious_powershell_flags
+    title: Hidden, profile-less PowerShell
+    technique: T1059
+    sub_technique: T1059.001
+    tactic: Execution
+    severity: medium
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE is_proc(e.event_type) AND bn(e.process) IN ('powershell.exe','pwsh.exe')
+        AND regexp_matches(lc(e.cmdline), '-w(i|in|ind|indo|indow|indowstyle)?\s+h(idden)?')
+
+  - id: wmi_remote_exec
+    title: Command spawned by WMI provider host
+    technique: T1047
+    tactic: Execution
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE is_proc(e.event_type) AND bn(e.parent) = 'wmiprvse.exe' AND script_host(bn(e.process))
+
+  - id: service_install
+    title: New service installed
+    technique: T1569
+    sub_technique: T1569.002
+    tactic: Execution
+    severity: medium
+    kind: known_bad
+    sql: |
+      SELECT e.*,
+        CASE WHEN regexp_matches(lc(e.cmdline), '\\(temp|tmp|users|programdata|public|appdata)\\|^%systemroot%\\[^\\]+\.exe$|^c:\\windows\\[^\\]+\.exe$|psexesvc|cmd(\.exe)? /c|powershell|\\\\\\\\|admin\$|rundll32|regsvr32')
+             THEN 0.75 ELSE 0.45 END AS hit_severity
+      FROM events e
+      WHERE e.event_type IN ('win:7045', 'win:4697')
+
+  - id: suspicious_sched_task
+    title: Scheduled task running a script host, UNC path or encoded command
+    technique: T1053
+    sub_technique: T1053.005
+    tactic: Execution
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.*,
+        CASE WHEN regexp_matches(lc(e.cmdline), 'powershell|pwsh|cmd\.exe|wscript|cscript|mshta|rundll32|regsvr32|\\\\\\\\|-enc|bypass|\\temp\\|\\public\\')
+             THEN 0.8 ELSE 0.35 END AS hit_severity
+      FROM events e
+      WHERE e.event_type IN ('win:4698', 'win:4702')
+        AND NOT (sys_acct(e.user) AND lc(e.cmdline) LIKE '%program files%' AND NOT regexp_matches(lc(e.cmdline), 'powershell|cmd\.exe|\\\\\\\\'))
+
+  - id: schtasks_cmdline
+    title: schtasks /create with a script host
+    technique: T1053
+    sub_technique: T1053.005
+    tactic: Execution
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE is_proc(e.event_type) AND bn(e.process) = 'schtasks.exe'
+        AND regexp_matches(lc(e.cmdline), '/create') AND regexp_matches(lc(e.cmdline), 'powershell|cmd|wscript|mshta|rundll32|\\\\\\\\|/s ')
+
+  - id: web_user_shell
+    title: Shell or command run as the web server account
+    technique: T1059
+    sub_technique: T1059.004
+    tactic: Execution
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.*,
+        CASE WHEN bn(e.process) IN ('cmd.exe','powershell.exe','pwsh.exe') THEN 'T1059.001' ELSE 'T1059.004' END AS sub_technique
+      FROM events e
+      WHERE is_proc(e.event_type)
+        AND (web_acct(e.user) OR bn(e.parent) IN ('w3wp.exe','httpd.exe','tomcat.exe','php-cgi.exe','nginx.exe'))
+        AND (shell_bin(bn(e.process)) OR shell_bin(bn(e.parent)))
+
+  - id: reverse_shell_cmdline
+    title: Reverse shell command line
+    technique: T1059
+    sub_technique: T1059.004
+    tactic: Execution
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE is_proc(e.event_type)
+        AND regexp_matches(lc(e.cmdline), '/dev/tcp/|/dev/udp/|\bnc(at)?\b.*\s-e\s|bash -i|sh -i\b|mkfifo .*\bnc\b|socat .*exec|pty\.spawn|perl -e .*socket|ruby -rsocket|new-object system\.net\.sockets\.tcpclient')
+
+  - id: lolbin_download
+    title: Living-off-the-land binary used to download
+    technique: T1105
+    tactic: Command and Control
+    severity: high
+    kind: known_bad
+    sql: |
+      SELECT e.* FROM events e
+      WHERE is_proc(e.event_type)
+        AND regexp_matches(lc(e.cmdline), 'certutil.*(-urlcache|-verifyctl).*http|bitsadmin.*/transfer|curl(\.exe)?\s.*\s-o\s|wget\s+http|invoke-webrequest.*-outfile|mshta\s+http')
