@@ -28,7 +28,8 @@ SIGMA_STEP_MIN = 0.6                      # Sigma 'high' and above can be incide
 NETWORK_TYPES = {"net:flow", "fw:flow", "zeek:conn", "fw:ips", "fw:av", "fw:web", "fw:app", "dns:query"}
 REMOTE_REQUEST = {"win:4769", "win:4768", "win:4776"}   # logged on the DC, naming the requesting host
 # links that only say "near in time / same account / same host"; strong ones (GUID, session, logon hop) always count
-WEAK_LINKS = {"same_account", "same_account_weak", "time_proximity", "compromised_host", "same_external_ip",
+ENDPOINT_WINDOW = 6 * 3_600_000            # same internal endpoint, network-only evidence
+WEAK_LINKS = {"same_account", "same_account_weak", "time_proximity", "compromised_host", "same_external_ip", "same_endpoint",
               "shared_ioc"}
 # techniques whose command line / registry data is a payload worth matching across hosts
 IOC_TECHNIQUES = {"T1059", "T1547", "T1204", "T1105", "T1486", "T1053", "T1071", "T1041", "T1505"}
@@ -263,6 +264,15 @@ class Linker:
                 j = bisect.bisect_right(ts, N[a].ts_end + 5 * MIN)
                 for b in members[i + 1:j]:
                     self.add(a, b, "time_proximity")
+            # firewall-only evidence has no session or process to link by: the endpoint is the story's thread
+            net = [k for k in members if self._network_only(N[k]) and N[k].severity >= 0.4 and N[k].technique
+                   and not N[k].noisy]
+            for i, a in enumerate(net):
+                for b in net[i + 1:]:
+                    if N[b].ts - N[a].ts_end > ENDPOINT_WINDOW:
+                        break
+                    if N[a].tactic != N[b].tactic:
+                        self.add(a, b, "same_endpoint")
         self._system_activity(host_sorted)          # first: explains service/SYSTEM hits by their own session
         self._logon_hops(host_sorted, host_ts)
 
@@ -304,6 +314,10 @@ class Linker:
             hub = members[0]
             for m in members[1:]:
                 self.add(hub, m, "shared_ioc")
+
+    @staticmethod
+    def _network_only(n: Node) -> bool:
+        return bool(n.rows) and all(r.get("event_type") in NETWORK_TYPES for r in n.rows)
 
     def _proc_hosts(self) -> set:
         """Hosts with process / connection telemetry (one query per run, not one per hit)."""

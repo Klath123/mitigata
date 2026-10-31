@@ -116,6 +116,7 @@ class IpResolver:
 
 # ---------------------------------------------------------------- host roles
 ROLE_PATTERNS = [
+    ("firewall", r"^(FGT|FG|FORTIGATE|FW|PA|PAN|ASA|SRX|CHKP|PFSENSE|OPNSENSE|SOPHOS|UTM)[-_]?\d|FIREWALL|^FW[-_]"),
     ("dc", r"(^|[-_])(DC|ADDC|PDC)\d*($|[-_])|DOMAINCONTROLLER"),
     ("fileserver", r"(^|[-_])(FS|FILE|FILESRV|NAS|SHARE)\d*"),
     ("database", r"(^|[-_])(SQL|DB|ORA|PG|MYSQL)\d*"),
@@ -125,7 +126,7 @@ ROLE_PATTERNS = [
     ("mail", r"(^|[-_])(EXCH|MAIL|SMTP)\d*"),
     ("server", r"(^|[-_])(SRV|SVR|APP)\d*"),
 ]
-CRITICALITY = {"dc": 1.0, "fileserver": 0.85, "database": 0.85, "backup": 0.8, "gateway": 0.75, "mail": 0.7,
+CRITICALITY = {"dc": 1.0, "firewall": 0.9, "fileserver": 0.85, "database": 0.85, "backup": 0.8, "gateway": 0.75, "mail": 0.7,
                "web": 0.6, "server": 0.55, "workstation": 0.3, "external": 0.1, "unknown": 0.4}
 
 
@@ -136,11 +137,13 @@ def build_hosts(con: duckdb.DuckDBPyConnection) -> dict[str, dict]:
     SELECT host, count(*) AS n, min(ts), max(ts),
            count(*) FILTER (WHERE event_type IN ('win:4768','win:4769','win:4776')) AS kerb,
            count(DISTINCT user) FILTER (WHERE event_type IN ('win:5140','win:5145')) AS share_users,
-           count(*) FILTER (WHERE format IN ('auditd') OR event_type LIKE 'auth:%' OR event_type LIKE 'syslog:%') AS linux
+           count(*) FILTER (WHERE format IN ('auditd') OR event_type LIKE 'auth:%' OR event_type LIKE 'syslog:%') AS linux,
+           count(*) FILTER (WHERE event_type LIKE 'fw:%' OR event_type IN ('net:flow', 'zeek:conn')) AS netdev,
+           count(DISTINCT src_ip) FILTER (WHERE event_type LIKE 'fw:%' OR event_type IN ('net:flow', 'zeek:conn')) AS netsrc
     FROM events WHERE host IS NOT NULL GROUP BY host
     """).fetchall()
     hosts = {}
-    for host, n, lo, hi, kerb, share_users, linux in rows:
+    for host, n, lo, hi, kerb, share_users, linux, netdev, netsrc in rows:
         role = "unknown"
         for r, pat in ROLE_PATTERNS:
             if re.search(pat, host, re.I):
@@ -150,6 +153,8 @@ def build_hosts(con: duckdb.DuckDBPyConnection) -> dict[str, dict]:
             role = "dc"
         elif role == "unknown" and share_users >= 10:
             role = "fileserver"
+        elif role == "unknown" and netdev > n * 0.5 and netsrc >= 20:
+            role = "firewall"                    # logs other machines' traffic: a network security device
         if role == "unknown":
             role = "workstation" if not linux else "server"
         hosts[host] = {"host": host, "events": n, "first": lo, "last": hi, "role": role,

@@ -19,6 +19,7 @@ WEIGHTS = {
     "reused_credential": 0.6,   # account exposed on a credential-theft host logs on elsewhere
     "same_account_weak": 0.35,  # same account, but one side is a low-severity hit
     "time_proximity": 0.3,      # same host, within 5 min, no other tie
+    "same_endpoint": 0.5,       # same internal endpoint within 6 h, both significant, seen only in network logs
 }
 SOLID = 0.7
 POSSIBLE = 0.4

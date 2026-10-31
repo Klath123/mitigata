@@ -27,7 +27,11 @@ def iso(ts: int | None) -> str:
     return datetime.fromtimestamp(ts / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{ts % 1000:03d}Z"
 
 
-def score(nodes: list[Node], stages: list[str]) -> tuple[float, dict]:
+CRITICAL_ASSET = 0.8        # dc 1.0, firewall 0.9, file / database server 0.85, backup 0.8
+ESCALATING_TACTICS = {"Defense Evasion", "Credential Access", "Impact", "Exfiltration", "Collection"}
+
+
+def score(nodes: list[Node], stages: list[str], criticality: dict[str, float] | None = None) -> tuple[float, dict]:
     labelled = [n for n in nodes if n.technique]
     T = len(set(stages))
     O = order_score(stages)
@@ -45,8 +49,20 @@ def score(nodes: list[Node], stages: list[str]) -> tuple[float, dict]:
         S = min(S, cap)
     if len(labelled) < 2:
         S = min(S, cap)
+    # escalation (outside the spec formula, reported separately): a multi-tactic chain with a high-severity step
+    # on a critical asset is an attack even on one machine - a compromised DC or firewall is often the whole story
+    C = max(((criticality or {}).get(h, 0.0) for h in hosts), default=0.0)
+    # the severe step must be one admins do not do: execution / lateral movement / services on a server are daily
+    # admin work (PsExec, remote logons), so they never escalate on their own
+    severe_on_critical = any(n.severity >= SEVERITY_REVIEW and n.tactic in ESCALATING_TACTICS
+                             and any((criticality or {}).get(h, 0.0) >= CRITICAL_ASSET for h in n.hosts)
+                             for n in nodes)
+    escalated = T >= 2 and len(labelled) >= 2 and severe_on_critical and S < REPORT
+    if escalated:
+        S = REPORT
     return round(S, 3), {"tactics": T, "order": round(O, 3), "hosts": H, "severity": round(V, 3),
-                         "rarity": round(R, 3)}
+                         "rarity": round(R, 3), "asset_criticality": round(C, 2),
+                         "escalated_critical_asset": escalated}
 
 
 def _step_user(rows: list[dict]) -> str | None:

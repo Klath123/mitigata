@@ -119,11 +119,12 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
     reach_g = build_reach_graph(con, hosts_info)
     log(f"  privilege graph: {reach_g.number_of_nodes()} hosts/accounts, {reach_g.number_of_edges()} edges")
 
+    crit = {h: v.get("criticality", 0.0) for h, v in hosts_info.items()}
     scored = []
     for comp in comps:
         ns = [nodes[k] for k in comp]
         steps = build_steps(ns)
-        S, br = score(ns, [s["stage"] for s in steps])
+        S, br = score(ns, [s["stage"] for s in steps], crit)
         scored.append((S, br, comp, steps))
     scored.sort(key=lambda x: -x[0])
     member_of = {}
