@@ -28,7 +28,8 @@ Hayabusa: GCP `/data/logs/bench/tools/hayabusa/hayabusa-4.3.1-lin-x64-gnu`; AWS 
 boxes, not the laptop (user preference).
 
 **Done:** GCP #1 synthetic check of `cdbf587` passed (`/data/logs/bench/out/phase6/summary.txt`, 2026-10-31 19:32Z).
-**Running when this was written:** big box hackathon rerun with `cdbf587` (`tmux after6`, `~/firex_after.log`); big box
+**Done:** big box hackathon rerun with `cdbf587` (351 s, peak 6.02 GB, 46 incidents: 2 attack + 44 review; see section 5).
+**Still running:** big box
 "before" baseline (old engine) still in correlation after 2.5 h+ (`tmux before`) — its point is that it never finishes.
 
 ## 3. How to measure
@@ -66,15 +67,16 @@ Found so far:
 2. **attack** — `rakes`: admin logon from the internet + config change.
 3. review — `keerat.ghughal`: SSL-VPN tunnels alternating Türkiye ↔ United States within minutes (shared/stolen creds).
 4. foreign admin logins: `deepika.khan` (Russia, ×3), `parul.sinha` (Türkiye), `svc_backup30` (service account, Ireland)
-   — should reach review after `cdbf587` (check).
+   — after `cdbf587`: parul.sinha and deepika.khan are review incidents (0.51); svc_backup30 not in the top 15 (check).
 5. 416 k failed admin logins (invalid user names, random IPs) — spray/noise, grouped.
-6. "scan → upload" on all 1,388 endpoints = artefact (flows sharing the last timestamp) — made noisy by `cdbf587`.
+6. "scan → upload" on endpoints = artefact (flows sharing the last timestamp). **NOT fixed by `cdbf587`:** about 40
+   review incidents (score 0.481, `fw_port_scan` + `behav_endpoint_upload_spike`, one per 10.10.x.x endpoint) remain.
+   Next fix: find out why the prevalence rule didn't mark them noisy (check `hits.noisy` and rule stats in the run).
 Rules for these were written after seeing the file: not a blind measurement.
 
 ## 6. Next steps (agreed order)
 
-1. Read the big box hackathon rerun (`~/firex_after.log`, `/data/logs/bench/runs/firex_after/incidents`). Then kill
-   `tmux before` on the big box.
+1. Fix the endpoint scan→upload review flood (section 5 item 6), rerun on the big box, then kill `tmux before` there.
 2. Rerun the **blind** set on AWS with the final code (`bash ~/round6.sh $HOME/bench blind <hayabusa-musl>`) — honest
    before/after for incident formation; check the small drops (Linux 10→7%, mix technique 83→80%).
 3. Write the **hackathon findings report** (timeline, evidence lines, what the logs cannot show) — as an Artifact.
