@@ -31,12 +31,13 @@ def load(run_dir: str) -> tuple[dict, dict[int, dict], dict]:
         summary = json.load(f)
     full = {}
     d = os.path.join(run_dir, "incidents")
-    if os.path.isdir(d):
-        for fn in os.listdir(d):
-            if fn.endswith(".json"):
-                with open(os.path.join(d, fn), encoding="utf-8") as f:
-                    inc = json.load(f)
-                full[int(inc["incident_id"])] = inc
+    # only the incidents this run's summary lists: a folder written before stale files were cleared may hold
+    # incident files of an older run
+    for iid in sorted({int(i["incident_id"]) for i in summary.get("incidents", []) + summary.get("review", [])}):
+        p = os.path.join(d, f"{iid}.json")
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                full[iid] = json.load(f)
     stats = {}
     sp = os.path.join(run_dir, "stats.json")
     if os.path.exists(sp):

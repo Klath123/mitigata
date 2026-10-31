@@ -29,6 +29,7 @@ from .lookahead import privmap
 from .lookahead.reach import build_graph as build_reach_graph, look_ahead
 import networkx as nx
 from . import quality
+from . import validate as chain_checks
 from .narrate import guard, report
 from .results import manifest, store
 from .store.db import connect, dedup_events, set_dataset_vars
@@ -219,6 +220,11 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
         inc["key_entities"] = key_entities(g.subgraph(comp), nodes)
         inc["data_quality"] = quality.for_incident(q or {}, steps, inc["gaps"])
         # narration: template always; LLM if available, checked by code
+        # IP -> host names the engine resolved for this incident: raw firewall lines only carry the IP, so a
+        # report or check that names the host needs the mapping (engine/validate.py, python -m engine.narrate)
+        inc["resolved_hosts"] = {ip: h for s in steps for r in s["_rows"]
+                                 for ip, h in ((r.get("src_ip"), r.get("src_h")), (r.get("dst_ip"), r.get("dst_h")))
+                                 if ip and h and h != ip}
         report.write(inc, steps, use_llm)       # verdict is set above: S >= REPORT is 'attack'
         inc["steps"] = [_strip(s) for s in steps]
         inc["navigator_layer"] = navigator.layer(inc)
@@ -309,6 +315,8 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
     summary = {"dataset": stats["dataset"], "processed": stats["processed"]}
     log("[5/6] write results")
     store.write(out, summary, incidents, review, stats)
+    log("  chain checks (engine/validate.py):")
+    chain_checks.run_dir(out, log=log)
     man = manifest.write(out, dataset, t_all, time.time(), rep, stats, full_hash=hash_full)
     log(f"  run manifest: run {man['run_id'][:8]}, engine {str(man['engine']['git_commit'])[:8]}"
         f"{' +uncommitted changes' if man['engine']['uncommitted_changes'] else ''}, config {man['config']['sha256'][:12]}, "
