@@ -43,32 +43,42 @@ class Sink:
         self.rec = 0
         self.serial = 1000
         self.manifest: dict[str, dict] = {}
+        self.vary = None                  # generator.vary.Variation: rename names, drop log sources
+        self.out_rel: dict[str, str] = {}
 
     def _fh(self, rel: str, header: str | None = None, host: str | None = None):
-        fh = self.files.get(rel)
-        if fh is None:
-            path = os.path.join(self.root, rel)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            fh = open(path, "w", encoding="utf-8", newline="\n", buffering=1 << 20)
-            self.files[rel] = fh
-            self.lines[rel] = 0
-            if header:
-                self._write(rel, header)
-            if host:
-                self.manifest[rel] = {"host": host}
+        if rel in self.files:
+            return self.files[rel]
+        if self.vary and self.vary.dropped(rel):          # log source switched off: nothing is written
+            self.files[rel] = None
+            return None
+        out = self.vary.line(rel) if self.vary else rel
+        path = os.path.join(self.root, out)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fh = open(path, "w", encoding="utf-8", newline="\n", buffering=1 << 20)
+        self.files[rel], self.out_rel[rel], self.lines[rel] = fh, out, 0
+        if header:
+            self._write(rel, header)
+        if host:
+            self.manifest[out] = {"host": self.vary.line(host) if self.vary else host}
         return fh
 
-    def _write(self, rel: str, text: str) -> str:
+    def _write(self, rel: str, text: str) -> str | None:
         fh = self.files[rel]
+        if fh is None:
+            return None
+        if self.vary:
+            text = self.vary.line(text)
         first = self.lines[rel] + 1
         fh.write(text + "\n")
         self.lines[rel] += text.count("\n") + 1
         self.bytes += len(text) + 1
-        return f"{rel}:{first}"
+        return f"{self.out_rel[rel]}:{first}"
 
     def close(self):
         for fh in self.files.values():
-            fh.close()
+            if fh is not None:
+                fh.close()
         with open(os.path.join(self.root, "manifest.json"), "w") as f:
             json.dump({"timezone": "UTC", "files": self.manifest}, f, indent=1)
 
