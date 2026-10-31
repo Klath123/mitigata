@@ -71,3 +71,56 @@ def trace(con: duckdb.DuckDBPyConnection, steps: list[dict], hops: list[dict], r
         if len(out) >= MAX_CONTEXT:
             break
     return out
+
+
+def corroborate(con: duckdb.DuckDBPyConnection, steps: list[dict], ip_of_host: dict[str, str]) -> int:
+    """Attach the evidence that proves a step but matched no rule (it changes no score, only the evidence):
+    - the network flow that carried a logon (same source IP -> the target's IP, seconds before it)
+    - explicit-credential use (4648) on the source host naming the target, just before a hop
+    - the remote-exec tool on the source host whose command line names the target host
+    - share access / privilege grants inside the hop's logon session
+    - the process a newly installed service started (same image path, minutes after) and its children
+    Returns the number of evidence lines added."""
+    added = 0
+    for s in steps:
+        have = set(s["evidence"])
+        found: list[tuple[str, int]] = []
+        for r in s["_rows"]:
+            et, h, ts = r.get("event_type"), r.get("host"), r.get("ts")
+            if not h or ts is None:
+                continue
+            if et in ("win:4624", "win:4625", "auth:success", "auth:fail") and r.get("src_ip"):
+                dst = ip_of_host.get(h)
+                if dst:
+                    found += con.execute("""SELECT src_file, line FROM events WHERE event_type IN
+                        ('net:flow', 'fw:flow', 'zeek:conn') AND src_ip = ? AND dst_ip = ?
+                        AND ts BETWEEN ? AND ?""", [r["src_ip"], dst, ts - 120_000, ts + 5_000]).fetchall()
+                src_h = r.get("src_h")
+                if src_h and src_h != h:
+                    found += con.execute("""SELECT src_file, line FROM events WHERE host = ? AND
+                        ((event_type = 'win:4648' AND upper(split_part(coalesce(dst_host, target, ''), '.', 1)) = upper(?))
+                         OR (event_type IN ('sysmon:1', 'win:4688') AND contains(upper(coalesce(cmdline, '')), ?)))
+                        AND ts BETWEEN ? AND ?""", [src_h, h, "\\\\" + h.upper(), ts - 300_000, ts + 2_000]).fetchall()
+                if r.get("logon_id"):
+                    found += con.execute("""SELECT src_file, line FROM events WHERE host = ? AND logon_id = ?
+                        AND event_type IN ('win:5140', 'win:5145', 'win:4672') AND ts BETWEEN ? AND ?""",
+                                         [h, r["logon_id"], ts - 5_000, ts + HOUR]).fetchall()
+            if et in ("win:7045", "win:4697") and r.get("process"):
+                img = r["process"].strip('"').lower()
+                procs = con.execute("""SELECT src_file, line, process_guid FROM events WHERE host = ?
+                    AND event_type IN ('sysmon:1', 'win:4688') AND lower(process) = ? AND ts BETWEEN ? AND ?""",
+                                    [h, img, ts - 5_000, ts + 300_000]).fetchall()
+                found += [(f, n) for f, n, _ in procs]
+                guids = [g for _, _, g in procs if g]
+                if guids:
+                    found += con.execute(f"""SELECT src_file, line FROM events WHERE host = ? AND parent_guid IN
+                        {_in(guids)} AND event_type IN ('sysmon:1', 'win:4688') AND ts BETWEEN ? AND ?""",
+                                         [h, ts - 5_000, ts + HOUR]).fetchall()
+                found += con.execute("""SELECT src_file, line FROM events WHERE host = ? AND event_type = 'win:4688'
+                    AND lower(parent) = ? AND ts BETWEEN ? AND ?""", [h, img, ts - 5_000, ts + HOUR]).fetchall()
+        new = [f"{f}:{n}" for f, n in dict.fromkeys(found) if f"{f}:{n}" not in have]
+        if new:
+            s["evidence"] = s["evidence"] + new[:50]
+            s["corroborating"] = new[:50]
+            added += len(new[:50])
+    return added

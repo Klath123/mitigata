@@ -21,7 +21,7 @@ from .graph.build import Linker, components, load_nodes, to_networkx
 from .graph.confidence import POSSIBLE, SOLID, noisy_or
 from .graph import export as graph_export
 from .graph.gaps import crosses, find_gaps, host_rates
-from .graph.tracer import trace
+from .graph.tracer import corroborate, trace
 from .hunt import hayabusa
 from .hunt.rules import HIT_COLS, load_macros, run_rules
 from .ingest.to_parquet import ingest
@@ -182,6 +182,7 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
                 g_nodes.append({"id": f"host:{hp['from']}", "type": "external", "label": hp["from"]})
         # tracer context
         ctx = trace(con, steps, hops, {h: ips[-1] for h, ips in ip_of_host.items()})
+        inc["corroborating_events"] = corroborate(con, steps, {h: ips[-1] for h, ips in ip_of_host.items()})
         for r in ctx[:150]:
             g_nodes.append({"id": f"ctx:{r['evidence']}", "type": "context", "label": r["event_type"],
                             "host": r["host"], "time": iso(r["ts"]), "why": r["why"], "evidence": r["evidence"]})
