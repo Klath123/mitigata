@@ -1,6 +1,6 @@
 # datasets and run outputs (large, regenerated)
-data/
-results/
+/data/
+/results/
 *.parquet
 *.duckdb
 *.duckdb.wal
