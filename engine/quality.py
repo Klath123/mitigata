@@ -200,6 +200,11 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
 
     for sk in ingest_report.get("skipped") or []:
         warn("medium", f"file {sk['file']} was not read: {sk['reason']}")
+    for rel, f in (ingest_report.get("files") or {}).items():
+        if f.get("binary"):
+            lo, hi = f.get("binary_lines") or ("?", "?")
+            warn("high", f"{rel}: {f['binary']:,} lines are binary/corrupt content (lines {lo}-{hi}); skipped, "
+                         f"not turned into events")
     if rates["malformed_pct"] >= 1:
         warn("high", f"{malformed:,} records ({rates['malformed_pct']}%) matched no parser; kept as raw text "
                      f"(generic) so keyword rules still see them, but fields are guessed")
@@ -242,6 +247,7 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
     for cap in tel["missing_capabilities"]:
         warn("medium", f"no {cap} in this dataset: detections that need it cannot fire")
     summary["files_skipped"] = len(ingest_report.get("skipped") or [])
+    summary["binary_lines_skipped"] = ingest_report.get("binary_lines_skipped", 0)
     return {"summary": summary, "rates": rates, "skipped_files": ingest_report.get("skipped") or [], "quality_score": round(score, 1), "warnings": warnings,
             "files": files, "hosts": hosts, "unknown_event_types": unknown_top,
             "late_tolerance_ms": LATE_TOLERANCE_MS, "telemetry": tel, "detectors_disabled": {}}
