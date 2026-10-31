@@ -33,3 +33,4 @@ rules/sigma/sigmahq/
 # logs and screenshots
 *.log
 ss/
+rules/sigma/.compiled.json

@@ -88,6 +88,35 @@ def compile_sequence(seq: dict) -> str:
     return sql + f"\n{first_sel}\nUNION ALL BY NAME\n{then_sel}"
 
 
+def _sigma_rules(sigma_dir: str) -> list[dict]:
+    """Converted Sigma rules, cached in <sigma_dir>/.compiled.json (parsing ~3,000 YAML files cost ~25 s a run).
+    The cache key covers every rule file (path, size, mtime) and the converter's own source."""
+    import hashlib
+    import json
+
+    from . import sigma as sigma_mod
+    h = hashlib.sha256(open(sigma_mod.__file__, "rb").read())
+    for p in sorted(glob.glob(os.path.join(sigma_dir, "**", "*.y*ml"), recursive=True)):
+        st = os.stat(p)
+        h.update(f"{os.path.relpath(p, sigma_dir)}|{st.st_size}|{st.st_mtime_ns}".encode())
+    key, cache = h.hexdigest(), os.path.join(sigma_dir, ".compiled.json")
+    try:
+        with open(cache, encoding="utf-8") as f:
+            c = json.load(f)
+        if c.get("key") == key:
+            SIGMA_REPORT.update(c["report"])
+            return c["rules"]
+    except (OSError, ValueError, KeyError):
+        pass
+    rules = sigma_mod.load_sigma_dir(sigma_dir, SIGMA_REPORT)
+    try:
+        with open(cache, "w", encoding="utf-8") as f:
+            json.dump({"key": key, "report": SIGMA_REPORT, "rules": rules}, f)
+    except OSError:                                # read-only rules folder: just don't cache
+        pass
+    return rules
+
+
 def load_rules(rules_dir: str = RULES_DIR) -> list[dict]:
     out = []
     for path in sorted(glob.glob(os.path.join(rules_dir, "detections", "*.y*ml"))
@@ -106,10 +135,9 @@ def load_rules(rules_dir: str = RULES_DIR) -> list[dict]:
             out.append(r)
     sigma_dir = os.path.join(rules_dir, "sigma")
     if os.path.isdir(sigma_dir):
-        from .sigma import load_sigma_dir
         SIGMA_REPORT.clear()
         seen = {r["id"] for r in out}
-        for r in load_sigma_dir(sigma_dir, SIGMA_REPORT):
+        for r in _sigma_rules(sigma_dir):
             if r["id"] not in seen:                    # the same Sigma rule shipped twice (ours + SigmaHQ)
                 seen.add(r["id"])
                 out.append(r)

@@ -35,7 +35,8 @@ from .store.db import connect, dedup_events, set_dataset_vars
 
 
 class PeakMemory:
-    """Samples RSS of this process and its children (the ingest pool) every 0.2 s."""
+    """Samples RSS of this process and its children (the ingest pool) every 0.5 s. Finding the children scans
+    every process on the box, so the child list is refreshed only every 5 s (it was ~70 s of CPU per run)."""
 
     def __init__(self):
         self.peak = 0
@@ -43,14 +44,21 @@ class PeakMemory:
         self._t = threading.Thread(target=self._run, daemon=True)
 
     def _run(self):
-        me = psutil.Process()
+        me, kids, refreshed = psutil.Process(), [], 0.0
         while not self._stop.is_set():
             try:
-                rss = me.memory_info().rss + sum(c.memory_info().rss for c in me.children(recursive=True))
+                if time.time() - refreshed > 5:
+                    kids, refreshed = me.children(recursive=True), time.time()
+                rss = me.memory_info().rss
+                for c in kids:
+                    try:
+                        rss += c.memory_info().rss
+                    except psutil.Error:                   # a worker that already exited
+                        pass
                 self.peak = max(self.peak, rss)
             except psutil.Error:
                 pass
-            self._stop.wait(0.2)
+            self._stop.wait(0.5)
 
     def __enter__(self):
         self._t.start()

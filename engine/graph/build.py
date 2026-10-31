@@ -305,11 +305,21 @@ class Linker:
             for m in members[1:]:
                 self.add(hub, m, "shared_ioc")
 
+    def _proc_hosts(self) -> set:
+        """Hosts with process / connection telemetry (one query per run, not one per hit)."""
+        if not hasattr(self, "_ph"):
+            self._ph = {h for (h,) in self.con.execute(
+                "SELECT DISTINCT host FROM events WHERE event_type IN ('sysmon:1', 'sysmon:3', 'win:4688', "
+                "'audit:execve', 'audit:connect') AND host IS NOT NULL").fetchall()}
+        return self._ph
+
     def _sent_bytes(self, k: str, host: str) -> bool:
         """A flow to an internet IP belongs to whoever ran the process that talked to that IP:
         find process events on the host naming that IP (Sysmon 3 / command line), then the hits that share
         their logon session or process lineage."""
         n = self.nodes[k]
+        if host not in self._proc_hosts():      # no process telemetry on this host: nothing can own the flow
+            return False
         ext = sorted({r["dst_ip"] for r in n.rows if is_external(r.get("dst_ip"))})
         if not ext:
             return False
