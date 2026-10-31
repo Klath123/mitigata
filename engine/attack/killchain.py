@@ -6,7 +6,7 @@ account used later on another host is Lateral Movement.
 """
 from __future__ import annotations
 
-from ..entities.resolve import is_internal
+from ..entities.resolve import is_external
 from ..schema import TACTIC_INDEX, TACTICS
 from . import stix
 
@@ -16,7 +16,7 @@ def choose_stage(technique: str | None, rule_tactic: str | None, step: dict, fir
     tid = technique or ""
     if tid == "T1078":
         src = step.get("src_ip")
-        if src and not is_internal(src):
+        if is_external(src):
             return "Initial Access"
         if step.get("host") and first_host and step["host"] != first_host and step["host"] not in seen_hosts:
             return "Lateral Movement"

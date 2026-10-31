@@ -53,17 +53,22 @@ def _epoch_num(x: float) -> int:
 class TimeParser:
     """Per-file timestamp parser: remembers the format that worked last time."""
 
-    def __init__(self, tz=timezone.utc, default_year: int | None = None):
+    def __init__(self, tz=timezone.utc, default_year: int | None = None, tz_declared: bool = False,
+                 year_declared: bool = False):
         self.tz = tz
         self.year = default_year or datetime.now(timezone.utc).year
         self.last_fmt: str | None = None
+        self.tz_declared, self.year_declared = tz_declared, year_declared
+        self.assumed = False          # did the last parse rely on an assumed timezone or year?
 
     def _aware_ms(self, d: datetime) -> int:
         if d.tzinfo is None:
             d = d.replace(tzinfo=self.tz)
+            self.assumed = self.assumed or not self.tz_declared
         return int((d - _EPOCH).total_seconds() * 1000)
 
     def parse(self, v) -> int | None:
+        self.assumed = False
         if v is None:
             return None
         if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -95,6 +100,7 @@ class TimeParser:
                     frac = m.group(6) or "0"
                     d = datetime(self.year, mon, int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5)),
                                  int(frac[:6].ljust(6, "0")))
+                    self.assumed = not self.year_declared          # syslog dates carry no year
                     return self._aware_ms(d)
         if self.last_fmt:
             try:
@@ -112,6 +118,18 @@ class TimeParser:
 
 
 # ====================================================================== value normalizers
+def domain_of(v) -> str | None:
+    """Domain written inside an account string: DOMAIN/user (backslash) -> DOMAIN, user@corp.local -> CORP.LOCAL."""
+    s = str(v).strip().strip('"')
+    if "\\" in s:
+        d = s.rsplit("\\", 1)[0].strip()
+        return d.upper() or None
+    if "@" in s and not s.upper().startswith("CN="):
+        d = s.split("@", 1)[1].strip()
+        return d.upper() or None
+    return None
+
+
 def norm_user(v) -> str | None:
     s = str(v).strip().strip('"')
     if not s or s.lower() in INVALID:
@@ -146,7 +164,7 @@ def norm_ip(v) -> tuple[str | None, str | None]:
     if s.count(":") == 1 and "." in s:                 # 1.2.3.4:5555
         s = s.split(":", 1)[0]
     if _is_ip(s):
-        return (None if s in ("0.0.0.0", "::", "127.0.0.1", "::1") else s), None
+        return s, None                 # loopback / unspecified kept: analysis decides, ingest never deletes
     return None, s
 
 
@@ -357,10 +375,18 @@ class Mapper:
             if date:
                 tsv = f"{date} {tsv}"
         row["ts"] = tp.parse(tsv) if tsv is not None else None
+        if row["ts"] is not None:
+            row["ts_assumed"] = tp.assumed
 
-        for f in ("user", "target_user"):
-            if f in raw:
-                row[f] = norm_user(raw.pop(f))
+        user_domain = None
+        if "user" in raw:
+            orig = raw.pop("user")
+            row["user"] = norm_user(orig)
+            if row["user"]:
+                row["user_original"] = str(orig).strip()[:256]
+                user_domain = domain_of(orig)
+        if "target_user" in raw:
+            row["target_user"] = norm_user(raw.pop("target_user"))
         for f in ("src_ip", "dst_ip", "host_ip"):
             if f in raw:
                 ip, name = norm_ip(raw.pop(f))
@@ -391,6 +417,8 @@ class Mapper:
                 row["dst_host"] = dl
         if "domain" in raw:
             row["domain"] = str(raw.pop("domain")).upper()
+        elif user_domain:
+            row["domain"] = user_domain
         lt = raw.get("logon_type")
         if isinstance(lt, str) and not lt.strip().lstrip("-").isdigit():
             raw["logon_type"] = self.logon_names.get(lt.strip().lower().replace(" ", "").replace("_", ""))

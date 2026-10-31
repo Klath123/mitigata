@@ -136,7 +136,7 @@ def run_task(t: dict) -> dict:
     ctx["mapper"] = mapper
     if t["start"] > 0:
         ctx["preamble"] = False
-    tp = TimeParser(_tz(t["tz"]), t["year"])
+    tp = TimeParser(_tz(t["tz"]), t["year"], tz_declared=t["tz_declared"], year_declared=t["year_declared"])
     seekable = fmt != "evtx"
     line_count = [0]
 
@@ -169,16 +169,20 @@ def run_task(t: dict) -> dict:
 
     k = 0
     for n, off, rec, raw in records:
-        rfmt = fmt
+        rfmt, status, error = fmt, "ok", None
         if rec is None:
             st["unparsed"] += 1
+            status = "fallback"
+            error = ctx.pop("_err", None) or f"{fmt} parser could not read this record"
             rec = parse_line_any(raw, ctx)
             rfmt = "generic"
         try:
             row, unmapped = mapper.map(rec, tp, t["host"], rfmt)
-        except Exception:
+        except Exception as ex:
             st["unparsed"] += 1
+            status, error = "map_error", f"{type(ex).__name__}: {str(ex)[:160]}"
             row, unmapped = mapper.map({"message": str(raw)[:4000]}, tp, t["host"], "generic")
+        row["parse_status"], row["parse_error"], row["ingest_ts"] = status, error, t["ingest_ts"]
         if unmapped:
             extra = {}
             for key in unmapped:
@@ -268,20 +272,24 @@ def ingest(root: str, out: str, workers: int | None = None, chunk_mb: int = 32,
             except ImportError:
                 log("  templates: drain3 not installed, generic files use key=value / timestamp heuristics only")
         host = meta.get("host") or _dir_host(rel)
-        sniffed.append((path, rel, size, fmt, ctx, host, meta.get("tz", gtz)))
+        sniffed.append((path, rel, size, fmt, ctx, host, meta.get("tz", gtz),
+                        bool(meta.get("tz") or manifest.get("timezone"))))
         log(f"  sniff {rel}: {fmt} ({size / 2**20:.1f} MB){' host=' + host if host else ''}")
     year = int(manifest.get("year") or (years.most_common(1)[0][0] if years else time.gmtime().tm_year))
 
     tasks = []
     count_jobs = []
-    for path, rel, size, fmt, ctx, host, tz in sniffed:
+    ingest_ts = int(time.time() * 1000)
+    for path, rel, size, fmt, ctx, host, tz, tz_declared in sniffed:
         if fmt in SPLITTABLE and size > chunk_mb * 2**20:
             b = _boundaries(path, size, chunk_mb * 2**20)
         else:
             b = [0, size]
         for i in range(len(b) - 1):
             tasks.append({"id": len(tasks), "path": path, "rel": rel, "fmt": fmt, "ctx": ctx, "host": host,
-                          "tz": tz, "year": year, "start": b[i], "end": b[i + 1], "base_line": 0,
+                          "tz": tz, "tz_declared": tz_declared, "year_declared": bool(manifest.get("year")),
+                          "ingest_ts": ingest_ts,
+                          "year": year, "start": b[i], "end": b[i + 1], "base_line": 0,
                           "out": os.path.join(ev_dir, f"part-{len(tasks):05d}.parquet")})
             if i > 0:
                 count_jobs.append((len(tasks) - 1, (path, b[i - 1], b[i])))

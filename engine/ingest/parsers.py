@@ -79,11 +79,13 @@ def parse_jsonl(lines: Iterable[Line], ctx: dict) -> Iterator[Rec]:
         if not s or s in ("[", "]"):
             continue
         if s[0] != "{":
+            ctx["_err"] = "not a JSON object"
             yield n, off, None, text
             continue
         try:
             obj = jloads(s)
-        except Exception:
+        except Exception as ex:
+            ctx["_err"] = f"invalid JSON: {str(ex)[:160]}"
             yield n, off, None, text
             continue
         yield n, off, _json_record(obj, ctx), text

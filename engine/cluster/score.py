@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from ..attack import stix
 from ..attack.killchain import choose_stage, order_score
-from ..entities.resolve import is_internal, is_system_account
+from ..entities.resolve import is_external, is_internal, is_system_account
 from ..graph.build import Node
 
 T_MAX = 6
@@ -133,7 +133,7 @@ def build_hops(steps: list[dict]) -> list[dict]:
                              "ts": r["ts"], "evidence": f"{r['src_file']}:{r['line']}", "technique": s["technique"]})
                 break
             if r.get("event_type") in ("win:4624", "auth:success") and r.get("src_ip") \
-                    and not is_internal(r["src_ip"]) and s["technique"] in HOP_TECH | {"T1110"}:
+                    and is_external(r["src_ip"]) and s["technique"] in HOP_TECH | {"T1110"}:
                 hops.append({"from": r["src_ip"], "to": r["host"], "user": r.get("user"), "time": iso(r["ts"]),
                              "ts": r["ts"], "evidence": f"{r['src_file']}:{r['line']}", "external": True,
                              "technique": s["technique"]})
@@ -185,7 +185,7 @@ def blast_radius(steps: list[dict], nodes: list[Node]) -> dict:
             if r.get("event_type") in ("win:5140", "win:5145", "sysmon:11", "audit:write", "audit:read") and t:
                 files.add(t)
             for ip in (r.get("src_ip"), r.get("dst_ip")):
-                if ip and not is_internal(ip):
+                if is_external(ip):
                     ext.add(ip)
     return {"users": sorted(users), "hosts": sorted(hosts), "files_and_shares": sorted(files)[:200],
             "external_ips": sorted(ext)}

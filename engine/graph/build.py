@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 import duckdb
 import networkx as nx
 
-from ..entities.resolve import IpResolver, is_internal, is_system_account
+from ..entities.resolve import IpResolver, is_external, is_internal, is_local, is_system_account
 from .confidence import POSSIBLE, WEIGHTS, noisy_or
 
 HOUR = 3_600_000
@@ -79,8 +79,10 @@ def load_nodes(con: duckdb.DuckDBPyConnection, resolver: IpResolver) -> dict[str
         n.severity = max(n.severity, r["severity"] or 0.0)
         # resolve the source host of logons/flows once
         src_h = r.get("src_host")
-        if r.get("src_ip") and not is_internal(r["src_ip"]):
+        if is_external(r.get("src_ip")):
             src_h = None                      # spoofable workstation name from an internet source
+        elif is_local(r.get("src_ip")):
+            src_h = r.get("host")             # loopback: the host itself, never a hop
         if not src_h and r.get("src_ip") and is_internal(r["src_ip"]):
             src_h = resolver.host(r["src_ip"], r["ts"])
         r["src_h"] = src_h
@@ -133,7 +135,7 @@ class Linker:
                 if lid and lid not in SYSTEM_LOGON_IDS and r.get("host"):
                     session_idx[(r["host"], lid)].append(k)
                 for ip in (r.get("src_ip"), r.get("dst_ip")):
-                    if ip and not is_internal(ip):
+                    if is_external(ip):
                         ext_idx[ip].append(k)
                 if r.get("event_type") in ("win:4720", "win:4728", "win:4732", "win:4756", "account:create") \
                         and r.get("target_user"):
@@ -200,7 +202,7 @@ class Linker:
                 continue
             for r in n.rows:
                 for ip in (r.get("src_ip"), r.get("dst_ip")):
-                    if ip and not is_internal(ip):
+                    if is_external(ip):
                         idx[("ip", ip)].append(k)
                 dh = r.get("dst_host") or ""
                 if "." in dh and not dh[0].isdigit():
@@ -232,7 +234,7 @@ class Linker:
         find process events on the host naming that IP (Sysmon 3 / command line), then the hits that share
         their logon session or process lineage."""
         n = self.nodes[k]
-        ext = sorted({r["dst_ip"] for r in n.rows if r.get("dst_ip") and not is_internal(r["dst_ip"])})
+        ext = sorted({r["dst_ip"] for r in n.rows if is_external(r.get("dst_ip"))})
         if not ext:
             return False
         lo, hi = n.ts - 15 * MIN, n.ts_end + 5 * MIN

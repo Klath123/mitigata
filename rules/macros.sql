@@ -3,9 +3,10 @@ CREATE OR REPLACE MACRO lc(x) AS lower(coalesce(CAST(x AS VARCHAR), ''));
 CREATE OR REPLACE MACRO bn(p) AS lower(regexp_extract(coalesce(p, ''), '[^\\/]+$'));
 CREATE OR REPLACE MACRO is_internal(ip) AS (coalesce(ip, '') LIKE '10.%' OR coalesce(ip, '') LIKE '192.168.%'
     OR regexp_matches(coalesce(ip, ''), '^172\.(1[6-9]|2[0-9]|3[01])\.') OR coalesce(ip, '') LIKE 'fe80:%'
-    OR coalesce(ip, '') LIKE '127.%' OR coalesce(ip, '') LIKE 'fd%:%');
+    OR coalesce(ip, '') LIKE 'fd%:%');
+CREATE OR REPLACE MACRO is_local(ip) AS (coalesce(ip, '') LIKE '127.%' OR ip IN ('::1', '0.0.0.0', '::'));
 CREATE OR REPLACE MACRO is_external(ip) AS (ip IS NOT NULL AND regexp_matches(ip, '^[0-9a-fA-F:.]+$')
-    AND NOT is_internal(ip));
+    AND NOT is_internal(ip) AND NOT is_local(ip));
 CREATE OR REPLACE MACRO is_proc(et) AS et IN ('sysmon:1', 'win:4688', 'audit:execve');
 CREATE OR REPLACE MACRO is_logon_ok(et) AS et IN ('win:4624', 'auth:success');
 CREATE OR REPLACE MACRO is_logon_fail(et) AS et IN ('win:4625', 'auth:fail', 'auth:invalid_user', 'win:4771', 'win:4776f');

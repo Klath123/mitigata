@@ -41,6 +41,7 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
                count(*) FILTER (WHERE ts IS NULL) AS ts_missing,
                count(*) FILTER (WHERE ts IS NOT NULL AND NOT ({ts_ok})) AS ts_invalid,
                count(*) FILTER (WHERE host IS NULL) AS host_missing,
+               count(*) FILTER (WHERE ts_assumed) AS ts_assumed,
                count(*) FILTER (WHERE event_type IS NULL) AS type_missing,
                count(*) FILTER (WHERE {unknown}) AS unknown_type,
                count(*) FILTER (WHERE {ue}) AS user_expected,
@@ -53,7 +54,7 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
                count(DISTINCT host) AS hosts, min(ts) FILTER (WHERE {ts_ok}) AS first_ts,
                max(ts) FILTER (WHERE {ts_ok}) AS last_ts
         FROM events_all""").fetchone()
-    cols = ["records", "ts_missing", "ts_invalid", "host_missing", "type_missing", "unknown_type", "user_expected",
+    cols = ["records", "ts_missing", "ts_invalid", "host_missing", "ts_assumed", "type_missing", "unknown_type", "user_expected",
             "user_missing", "remote_logons", "remote_logon_no_source", "proc_expected", "process_missing", "hosts",
             "first_ts", "last_ts"]
     t = dict(zip(cols, row))
@@ -87,6 +88,7 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
             "user_where_expected": t["user_missing"], "source_of_remote_logon": t["remote_logon_no_source"],
             "process_where_expected": t["process_missing"]},
         "invalid_timestamps": t["ts_invalid"],
+        "timestamps_with_assumption": t["ts_assumed"],
         "unknown_event_types": t["unknown_type"],
         "duplicate_records": dup_same,
         "duplicate_records_across_sources": max(dup_any - dup_same, 0),
@@ -160,6 +162,11 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
         warn("high" if rates["timestamp_missing_or_invalid_pct"] >= 1 else "medium",
              f"{excluded:,} records ({rates['timestamp_missing_or_invalid_pct']}%) have a missing or impossible "
              f"timestamp and were excluded from detection (kept in events_all)")
+    if t["ts_assumed"]:
+        warn("medium" if _pct(t["ts_assumed"], recs) >= 1 else "low",
+             f"{t['ts_assumed']:,} timestamps ({_pct(t['ts_assumed'], recs)}%) relied on an assumption (no timezone "
+             f"in the log and none declared, or a syslog date without a year); declare `timezone`/`year` in "
+             f"manifest.json so cross-source ordering is exact")
     if rates["host_missing_pct"] >= 1:
         warn("medium", f"{t['host_missing']:,} records ({rates['host_missing_pct']}%) name no host; add the host to "
                        f"manifest.json or a host-named folder")

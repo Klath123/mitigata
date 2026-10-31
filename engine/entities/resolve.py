@@ -23,10 +23,22 @@ def is_internal_sql(col: str) -> str:
     return INTERNAL_SQL.format(c=col)
 
 
+LOCAL_IPS = ("::1", "0.0.0.0", "::")
+
+
+def is_local(ip: str | None) -> bool:
+    """Loopback / unspecified: the host itself, neither its network nor the internet."""
+    return bool(ip) and (ip.startswith("127.") or ip in LOCAL_IPS)
+
+
+def is_external(ip: str | None) -> bool:
+    return bool(ip) and not is_internal(ip) and not is_local(ip)
+
+
 def is_internal(ip: str | None) -> bool:
     if not ip:
         return False
-    if ip.startswith(("10.", "192.168.", "fe80:", "127.")):
+    if ip.startswith(("10.", "192.168.", "fe80:")):
         return True
     m = re.match(r"172\.(\d+)\.", ip)
     return bool(m and 16 <= int(m.group(1)) <= 31)
@@ -44,6 +56,7 @@ def build_ip_map(con: duckdb.DuckDBPyConnection) -> int:
     CREATE OR REPLACE TABLE ip_obs AS
     SELECT host_ip AS ip, host, ts, 1 AS prio FROM events
       WHERE host_ip IS NOT NULL AND host IS NOT NULL AND ts IS NOT NULL AND NOT regexp_matches(host, '^[0-9.:]+$')
+        AND NOT (host_ip LIKE '127.%' OR host_ip IN ('::1', '0.0.0.0', '::'))
     UNION ALL
     SELECT src_ip, host, ts, 2 FROM events
       WHERE event_type = 'sysmon:3' AND src_ip IS NOT NULL AND host IS NOT NULL AND {is_internal_sql('src_ip')}

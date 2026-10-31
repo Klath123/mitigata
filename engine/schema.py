@@ -13,8 +13,9 @@ EVENT_FIELDS: list[tuple[str, pa.DataType]] = [
     ("format", pa.string()),       # sniffed format name
     ("host", pa.string()),         # reporting host, upper-cased short name
     ("host_ip", pa.string()),      # reporting host's own IP when the log says so
-    ("user", pa.string()),         # normalized account (lower, domain stripped)
-    ("domain", pa.string()),
+    ("user", pa.string()),         # normalized account (lower, domain stripped) - used for correlation
+    ("user_original", pa.string()),  # account exactly as the log wrote it (DOMAIN\Administrator)
+    ("domain", pa.string()),       # account domain: from a domain field or from the account string itself
     ("src_ip", pa.string()),
     ("src_port", pa.int32()),
     ("dst_ip", pa.string()),
@@ -48,6 +49,11 @@ EVENT_FIELDS: list[tuple[str, pa.DataType]] = [
     ("message", pa.string()),      # free text: syslog message, script block, user agent
     ("extra", pa.string()),        # JSON of unmapped fields (kept small)
     ("offset", pa.int64()),        # byte offset of the record in src_file (-1 if not seekable)
+    ("parse_status", pa.string()),  # ok | fallback (format parser rejected it, generic parser used) | map_error
+    ("parse_error", pa.string()),  # why, when parse_status is not ok
+    ("ingest_ts", pa.int64()),     # when AttackStory ingested the record (epoch ms UTC)
+    ("ts_assumed", pa.bool_()),    # true if ts relied on an assumption (no timezone in the log and none declared,
+                                   # or a syslog date without a year)
     ("raw", pa.string()),          # original record, only stored when offset is -1
 ]
 EVENT_SCHEMA = pa.schema(EVENT_FIELDS)

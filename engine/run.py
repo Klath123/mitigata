@@ -29,7 +29,7 @@ from .lookahead.reach import build_graph as build_reach_graph, look_ahead
 import networkx as nx
 from . import quality
 from .narrate import checker, guard, llm, template
-from .results import store
+from .results import manifest, store
 from .store.db import connect, set_dataset_vars
 
 
@@ -240,7 +240,7 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
 
 
 def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB", use_llm: bool = True,
-        skip_ingest: bool = False, log=print) -> dict:
+        skip_ingest: bool = False, log=print, hash_full: bool = False) -> dict:
     os.makedirs(out, exist_ok=True)
     stages = {}
     t_all = time.time()
@@ -310,6 +310,10 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
     summary = {"dataset": stats["dataset"], "processed": stats["processed"]}
     log("[5/6] write results")
     store.write(out, summary, incidents, review, stats)
+    man = manifest.write(out, dataset, t_all, time.time(), rep, stats, full_hash=hash_full)
+    log(f"  run manifest: run {man['run_id'][:8]}, engine {str(man['engine']['git_commit'])[:8]}"
+        f"{' +uncommitted changes' if man['engine']['uncommitted_changes'] else ''}, config {man['config']['sha256'][:12]}, "
+        f"{len(man['inputs'])} input files hashed ({'full' if hash_full else 'fast'})")
     log(f"[6/6] done in {seconds}s, peak memory {stats['processed']['peak_memory_gb']} GB: "
         f"{len(incidents)} attack incident(s), {len(review)} for review")
     for i in incidents:
@@ -326,8 +330,9 @@ def main(argv=None):
     p.add_argument("--memory", default="6GB")
     p.add_argument("--no-llm", action="store_true")
     p.add_argument("--skip-ingest", action="store_true", help="reuse existing Parquet in --out")
+    p.add_argument("--hash-full", action="store_true", help="full SHA-256 of every input file in run_manifest.json")
     a = p.parse_args(argv)
-    run(a.dataset, a.out, a.workers, a.memory, not a.no_llm, a.skip_ingest)
+    run(a.dataset, a.out, a.workers, a.memory, not a.no_llm, a.skip_ingest, hash_full=a.hash_full)
 
 
 if __name__ == "__main__":

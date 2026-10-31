@@ -63,7 +63,8 @@ rules:
     severity: medium
     kind: sequence
     sequence:
-      first: "is_logon_fail(e.event_type) AND e.src_ip IS NOT NULL AND e.user IS NOT NULL"
+      # loopback is a different machine on every host: never one sprayer
+      first: "is_logon_fail(e.event_type) AND e.src_ip IS NOT NULL AND NOT is_local(e.src_ip) AND e.user IS NOT NULL"
       by: [src_ip]
       min_count: 10
       min_distinct: {user: 8}
