@@ -71,3 +71,10 @@ def test_firewall_rules_fire():
         == ("T1562.002", 0.75)                                                  # logging disabled
     assert st["fw_admin_from_internet"]["hits"] == 3
     assert st["fw_account_geo_jump"]["hits"] == 2                               # Russia then Türkiye in 10 min
+
+
+def test_service_image_matches_the_process_start():
+    from engine.graph.tracer import service_image
+    assert service_image(r"%SystemRoot%\PSEXESVC.exe") == r"c:\windows\psexesvc.exe"
+    assert service_image(r'"C:\Program Files\x\a.exe" -k netsvcs') == r"c:\program files\x\a.exe"
+    assert service_image(r"C:\Windows\wsync.exe /install") == r"c:\windows\wsync.exe"

@@ -33,6 +33,20 @@ ATTACKSTORY_RUN=results/s1 uvicorn engine.api.app:app --port 8000
 pytest
 ```
 
+### Analyst UI (React)
+
+`frontend/` is a React + Cytoscape.js single page over the API: ranked incidents, kill map (tactics × hosts),
+attack graph, host-hop view, timeline with replay, look-ahead reach graph, blast radius and IOCs, ATT&CK matrix,
+excluded/gaps, response checklist, and a narrative whose citations open the raw log lines.
+
+```bash
+cd frontend && npm install
+npm run dev        # http://localhost:5173, proxies the API on :8000 (override with ATTACKSTORY_API)
+npm run build      # writes frontend/dist; uvicorn then serves it at http://localhost:8000 (else falls back to ui/index.html)
+```
+
+Views are deep-linkable: `#i=<incident>&t=<kill|graph|hops|time|look|blast|matrix|excluded|steps|response>` or `#overview`.
+
 Re-run detection/correlation without re-parsing: `python -m engine.run data/s1 --out results/s1 --skip-ingest --no-llm`.
 Your own logs: point `engine.run` at any folder; files are recognised by content (gz/zip/EVTX/UTF-16 included).
 

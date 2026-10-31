@@ -52,7 +52,10 @@ rules:
     kind: known_bad
     sql: |
       SELECT e.*,
-        CASE WHEN e.event_type = 'win:4624' THEN 'T1078.002' ELSE 'T1078.003' END AS sub_technique
+        CASE WHEN e.event_type = 'win:4624' THEN 'T1078.002' ELSE 'T1078.003' END AS sub_technique,
+        -- a service account has no business logging on from the internet
+        CASE WHEN regexp_matches(lc(e."user"), '^(svc|service|sa|srv)[_.-]|[_.-](svc|service)$|\$$') THEN 0.9
+             ELSE 0.6 END AS hit_severity
       FROM events e
       WHERE is_logon_ok(e.event_type) AND is_external(e.src_ip)
         AND (e.event_type <> 'win:4624' OR e.logon_type IN (2, 3, 7, 8, 9, 10, 11))

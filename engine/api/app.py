@@ -11,11 +11,13 @@ from collections import OrderedDict
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from ..results import store
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 UI = os.path.join(ROOT, "ui", "index.html")
+DIST = os.path.join(ROOT, "frontend", "dist")  # React build (cd frontend && npm run build); falls back to ui/index.html
 
 
 class Results:
@@ -55,9 +57,15 @@ def create_app(run_dir: str | None = None) -> FastAPI:
         resp.headers["X-Response-Time-ms"] = f"{(time.perf_counter() - t) * 1000:.1f}"
         return resp
 
+    if os.path.isdir(os.path.join(DIST, "assets")):
+        app.mount("/assets", StaticFiles(directory=os.path.join(DIST, "assets")), name="assets")
+
     @app.get("/", include_in_schema=False)
     def ui():
-        return FileResponse(UI) if os.path.exists(UI) else JSONResponse({"see": "/docs"})
+        for page in (os.path.join(DIST, "index.html"), UI):
+            if os.path.exists(page):
+                return FileResponse(page)
+        return JSONResponse({"see": "/docs"})
 
     @app.get("/health")
     def health():
@@ -81,6 +89,10 @@ def create_app(run_dir: str | None = None) -> FastAPI:
                 hosts=len(inc.get("blast_radius", {}).get("confirmed", {}).get("hosts", [])),
                 steps=len(inc["steps"]), first_seen=inc["first_seen"], last_seen=inc["last_seen"],
                 score_breakdown=inc.get("score_breakdown"), injection_flags=len(inc.get("injection_flags", [])),
+                entry=(inc["steps"][0].get("technique_name") or inc["steps"][0]["technique"]) if inc["steps"] else None,
+                outcome=(inc["steps"][-1].get("technique_name") or inc["steps"][-1]["technique"]) if inc["steps"] else None,
+                could_reach=len(inc.get("blast_radius", {}).get("potential", {}).get("potential_hosts", [])),
+                external_source=next((h["from"] for h in inc.get("hops", []) if h.get("external")), None),
                 report_url=inc.get("report_url")))
         return {"dataset": r.summary.get("dataset"), "count": len(items), "incidents": items}
 
@@ -112,7 +124,7 @@ def create_app(run_dir: str | None = None) -> FastAPI:
         if format == "json":
             return {"incident_id": iid, "source": inc.get("report_source"), "grounding_rate": inc.get("grounding_rate"),
                     "sentences": inc.get("report", []), "dropped": inc.get("report_dropped", []),
-                    "injection_flags": inc.get("injection_flags", [])}
+                    "injection_flags": inc.get("injection_flags", []), "actions": recommended_actions(inc)}
         return PlainTextResponse(render_markdown(inc), media_type="text/markdown")
 
     @app.get("/incidents/{iid}/navigator")

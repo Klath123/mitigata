@@ -6,6 +6,9 @@ import os
 import duckdb
 
 TS_MIN = 946_684_800_000          # 2000-01-01: anything earlier is a parse error, not a log
+# identical records: the same event written twice into the same file
+DUP_KEY = ("hash(ts, host, event_type, \"user\", process, cmdline, target, src_ip, dst_ip, dst_port, bytes_out, "
+           "logon_id, src_file)")
 
 
 def connect(run_dir: str, memory_limit: str = "6GB", threads: int | None = None,
@@ -26,6 +29,15 @@ def connect(run_dir: str, memory_limit: str = "6GB", threads: int | None = None,
     con.execute(f"CREATE OR REPLACE VIEW events AS SELECT * FROM events_all "
                 f"WHERE ts BETWEEN {TS_MIN} AND epoch_ms(now()::TIMESTAMP) + {2 * 86_400_000}")
     return con
+
+
+def dedup_events(con: duckdb.DuckDBPyConnection) -> int:
+    """Detection sees each identical record once (first occurrence kept); events_all still has every copy."""
+    con.execute(f"""CREATE OR REPLACE TABLE events_det AS SELECT * FROM events
+                    QUALIFY row_number() OVER (PARTITION BY {DUP_KEY} ORDER BY src_file, line) = 1""")
+    before = con.execute("SELECT count(*) FROM events").fetchone()[0]
+    con.execute("CREATE OR REPLACE VIEW events AS SELECT * FROM events_det")
+    return before - con.execute("SELECT count(*) FROM events").fetchone()[0]
 
 
 def set_dataset_vars(con: duckdb.DuckDBPyConnection, warmup_frac: float = 0.2, min_warmup_h: float = 12) -> dict:

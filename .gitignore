@@ -27,3 +27,9 @@ id_ed25519*
 rules/attack/enterprise-attack.json
 # community Sigma rules: fetched by python -m engine.hunt.fetch_sigma
 rules/sigma/sigmahq/
+# frontend (React UI)
+/frontend/node_modules/
+/frontend/dist/
+# logs and screenshots
+*.log
+ss/

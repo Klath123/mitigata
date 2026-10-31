@@ -237,8 +237,15 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
     con.execute(HITS_DDL)
     stats = {}
     have: dict[tuple, int] = {}
+    aggregated: dict[str, int] = {}       # rule -> separate hits before grouping
     grouped = [r for r in rules if r.get("group") and r.get("match")]
     _run_grouped(con, grouped, stats, log)
+    for r in grouped:
+        if stats.get(r["id"], {}).get("hits", 0) > MAX_HIT_KEYS:
+            agg = _aggregate_noisy(con, r["id"])
+            if agg:
+                stats[r["id"]]["aggregated"] = agg
+                aggregated[r["id"]] = agg["from"]
     for r in rules:
         t0 = time.time()
         if r.get("group") and r.get("match"):
@@ -287,6 +294,12 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
             con.execute(sql)
             n = con.execute("SELECT count(*) FROM hits").fetchone()[0] - n0
             stats[r["id"]] = {"hits": n, "seconds": round(time.time() - t0, 2)}
+            agg = _aggregate_noisy(con, r["id"])
+            if agg:
+                stats[r["id"]]["aggregated"] = agg
+                aggregated[r["id"]] = agg["from"]
+                log(f"  rule {r['id']}: {agg['from']:,} separate hits is noise at this volume, "
+                    f"grouped by {agg['by']} into {agg['to']:,} (severity halved)")
         except Exception as ex:
             stats[r["id"]] = {"error": str(ex).splitlines()[0][:300]}
             log(f"  rule {r['id']}: ERROR {stats[r['id']]['error']}")
@@ -295,8 +308,12 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
     # one row per (rule, evidence line); rarity = how unusual this rule+process signature is dataset-wide;
     # noisy = the rule fires far more often than an attack could, relative to hosts x days in THIS dataset:
     # such hits join an incident only through strong evidence links (graph/build.py WEAK_LINKS)
-    hosts, days = con.execute("SELECT count(DISTINCT host), greatest(1, (max(ts) - min(ts)) / 86400000.0) "
-                              "FROM events WHERE ts IS NOT NULL").fetchone()
+    try:
+        hosts, days = con.execute("SELECT count(DISTINCT host), greatest(1, (max(ts) - min(ts)) / 86400000.0) "
+                                  "FROM events WHERE ts IS NOT NULL").fetchone()
+    except duckdb.CatalogException:       # rules run without an events table (unit use): size from the hits
+        hosts, days = con.execute("SELECT count(DISTINCT host), greatest(1, (max(ts) - min(ts)) / 86400000.0) "
+                                  "FROM hits WHERE ts IS NOT NULL").fetchone()
     noisy_at = max(NOISY_MIN, NOISY_PER_HOST_DAY * (hosts or 1) * (days or 1))
     # baseline: a rule that already fired for the same host + process during the warm-up is describing normal
     # activity of this environment, so its hits there are noisy too (the SOC tuning step, done from the data)
@@ -311,9 +328,11 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
     SELECT d.* EXCLUDE (sig__), 1.0 / (1 + log10(1 + count(DISTINCT d.hit_key) OVER (
                  PARTITION BY d.rule_id, d.sig__))) AS rarity,
            count(DISTINCT d.hit_key) OVER (PARTITION BY d.rule_id) > """ + str(noisy_at) + """
-             OR b.rule_id IS NOT NULL AS noisy
+             OR b.rule_id IS NOT NULL  OR d.rule_id IN (""" + (", ".join(_lit(k) for k in aggregated) or "''") + """) AS noisy
     FROM d LEFT JOIN base b ON b.rule_id = d.rule_id AND b.host IS NOT DISTINCT FROM d.host AND b.sig__ = d.sig__
     """)
+    for rid, n_keys in aggregated.items():            # rarity reflects how noisy the rule really was, not the grouping
+        con.execute("UPDATE hits SET rarity = ? WHERE rule_id = ?", [1.0 / (1 + math.log10(1 + n_keys)), rid])
     for rid, n in con.execute("SELECT rule_id, count(DISTINCT hit_key) FROM hits WHERE noisy GROUP BY 1").fetchall():
         if rid in stats:
             stats[rid]["noisy"] = f"{n} hits > {noisy_at:.0f} (hosts x days x {NOISY_PER_HOST_DAY})"
@@ -351,6 +370,25 @@ def _coverage(rules: list[dict], stats: dict) -> dict:
         packs["hayabusa"] = {"rules": len(vendor), "fired": len(vendor), "disabled": 0, "errors": 0,
                              "hits": sum(v.get("hits", 0) for v in vendor.values())}
     return packs
+
+
+MAX_HIT_KEYS = 2000          # more separate hits than this from one rule is noise, not a list to correlate
+_DAY = "CAST(ts // 86400000 AS VARCHAR)"
+_GROUPINGS = [("host+source+day", f"coalesce(host, '') || '|' || coalesce(src_ip, '') || '|' || {_DAY}"),
+              ("host+day", f"coalesce(host, '') || '|' || {_DAY}")]
+
+
+def _aggregate_noisy(con: duckdb.DuckDBPyConnection, rule_id: str) -> dict | None:
+    """Group a flooding rule's hits per host/source/day (coarser if still too many). Every evidence row is kept."""
+    n_keys = con.execute("SELECT count(DISTINCT hit_key) FROM hits WHERE rule_id = ?", [rule_id]).fetchone()[0]
+    if n_keys <= MAX_HIT_KEYS:
+        return None
+    for i, (name, expr) in enumerate(_GROUPINGS):
+        n_new = con.execute(f"SELECT count(DISTINCT {expr}) FROM hits WHERE rule_id = ?", [rule_id]).fetchone()[0]
+        if n_new <= MAX_HIT_KEYS or i == len(_GROUPINGS) - 1:
+            con.execute(f"UPDATE hits SET hit_key = rule_id || '#agg|' || {expr}, severity = severity * 0.5 "
+                        "WHERE rule_id = ?", [rule_id])
+            return {"from": n_keys, "to": n_new, "by": name}
 
 
 __all__ = ["load_rules", "run_rules", "load_macros", "compile_sequence", "SEVERITY", "math"]

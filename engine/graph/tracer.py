@@ -73,6 +73,25 @@ def trace(con: duckdb.DuckDBPyConnection, steps: list[dict], hops: list[dict], r
     return out
 
 
+_ENV_ROOTS = (("%systemroot%", "c:\\windows"), ("%windir%", "c:\\windows"), ("\\systemroot\\", "c:\\windows\\"),
+              ("%programfiles%", "c:\\program files"), ("%programdata%", "c:\\programdata"))
+
+
+def service_image(path: str) -> str:
+    """A service ImagePath as the process start will show it: env roots expanded, quotes and arguments dropped
+    ('%SystemRoot%\\PSEXESVC.exe' and '"C:\\x\\a.exe" -k' match the process images C:\\Windows\\..., C:\\x\\a.exe)."""
+    p = path.strip().lower()
+    if p.startswith('"'):
+        p = p[1:].split('"', 1)[0]
+    elif ".exe " in p:
+        p = p.split(".exe ", 1)[0] + ".exe"
+    for env, real in _ENV_ROOTS:
+        if p.startswith(env):
+            p = real + p[len(env):]
+            break
+    return p
+
+
 def corroborate(con: duckdb.DuckDBPyConnection, steps: list[dict], ip_of_host: dict[str, str]) -> int:
     """Attach the evidence that proves a step but matched no rule (it changes no score, only the evidence):
     - the network flow that carried a logon (same source IP -> the target's IP, seconds before it)
@@ -106,7 +125,7 @@ def corroborate(con: duckdb.DuckDBPyConnection, steps: list[dict], ip_of_host: d
                         AND event_type IN ('win:5140', 'win:5145', 'win:4672') AND ts BETWEEN ? AND ?""",
                                          [h, r["logon_id"], ts - 5_000, ts + HOUR]).fetchall()
             if et in ("win:7045", "win:4697") and r.get("process"):
-                img = r["process"].strip('"').lower()
+                img = service_image(r["process"])
                 procs = con.execute("""SELECT src_file, line, process_guid FROM events WHERE host = ?
                     AND event_type IN ('sysmon:1', 'win:4688') AND lower(process) = ? AND ts BETWEEN ? AND ?""",
                                     [h, img, ts - 5_000, ts + 300_000]).fetchall()

@@ -38,6 +38,20 @@ _TS_FORMATS = [
 _SYSLOG_RE = re.compile(r"^([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d\d):(\d\d):(\d\d)(?:\.(\d+))?")
 _FRAC_RE = re.compile(r"(\.\d{6})\d+")
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_TZ_KEYS = ("tz", "timezone", "tz_offset", "utc_offset")
+_TZ_RE = re.compile(r"^(?:UTC|GMT)?\s*([+-])(\d\d):?(\d\d)$", re.I)
+_TZ_CACHE: dict[str, timezone | None] = {}
+
+
+def record_tz(v) -> timezone | None:
+    """A record's own UTC offset (FortiGate tz="+0530", "+05:30", "UTC+05:30"), or None."""
+    s = str(v).strip().strip('"')
+    if s not in _TZ_CACHE:
+        m = _TZ_RE.match(s)
+        mins = int(m.group(2)) * 60 + int(m.group(3)) if m else None
+        _TZ_CACHE[s] = (timezone(timedelta(minutes=mins if m.group(1) == "+" else -mins))
+                        if m and mins <= 14 * 60 else None)
+    return _TZ_CACHE[s]
 
 
 def _epoch_num(x: float) -> int:
@@ -60,15 +74,20 @@ class TimeParser:
         self.last_fmt: str | None = None
         self.tz_declared, self.year_declared = tz_declared, year_declared
         self.assumed = False          # did the last parse rely on an assumed timezone or year?
+        self.rec_tz: timezone | None = None
 
     def _aware_ms(self, d: datetime) -> int:
         if d.tzinfo is None:
-            d = d.replace(tzinfo=self.tz)
-            self.assumed = self.assumed or not self.tz_declared
+            if self.rec_tz is not None:          # the record states its own offset: a fact, not an assumption
+                d = d.replace(tzinfo=self.rec_tz)
+            else:
+                d = d.replace(tzinfo=self.tz)
+                self.assumed = self.assumed or not self.tz_declared
         return int((d - _EPOCH).total_seconds() * 1000)
 
-    def parse(self, v) -> int | None:
+    def parse(self, v, rec_tz: timezone | None = None) -> int | None:
         self.assumed = False
+        self.rec_tz = rec_tz
         if v is None:
             return None
         if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -386,7 +405,11 @@ class Mapper:
             date = next((rec[k] for k in keys if k.lower() in ("date", "date_utc", "logdate")), None)
             if date:
                 tsv = f"{date} {tsv}"
-        row["ts"] = tp.parse(tsv) if tsv is not None else None
+        rtz = None
+        if not tp.tz_declared:                   # a timezone declared in manifest.json still wins
+            tzk = next((k for k in keys if k.lower() in _TZ_KEYS), None)
+            rtz = record_tz(rec[tzk]) if tzk and rec[tzk] is not None else None
+        row["ts"] = tp.parse(tsv, rtz) if tsv is not None else None
         if row["ts"] is not None:
             row["ts_assumed"] = tp.assumed
 

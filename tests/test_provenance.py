@@ -109,3 +109,14 @@ def test_account_identity_for_linking():
     # local accounts on different machines are different people
     assert account_key("administrator", "WS-01", domains) != account_key("administrator", "WS-02", domains)
     assert account_key("system", "NT AUTHORITY", domains) is None
+
+
+def test_timezone_stated_in_the_record(tmp_path):
+    # FortiGate writes local date/time plus tz="+0530": the record's own offset is a fact, not an assumption
+    (tmp_path / "fw.log").write_text('date=2026-10-23 time=08:48:26 tz="+0530" devname="FGT" srcip=10.0.0.5 '
+                                     'dstip=8.8.8.8 dstport=53\n', encoding="utf-8")
+    ingest(str(tmp_path), str(tmp_path / "_o"), workers=1, log=lambda *_: None)
+    ts, assumed = duckdb.connect().execute(
+        f"SELECT ts, ts_assumed FROM read_parquet('{(tmp_path / '_o' / 'events').as_posix()}/*.parquet')").fetchone()
+    assert assumed is False
+    assert ts == int(datetime(2026, 10, 23, 3, 18, 26, tzinfo=timezone.utc).timestamp() * 1000)

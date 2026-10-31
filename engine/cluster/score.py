@@ -17,6 +17,7 @@ T_MAX = 6
 STEP_GAP = 15 * 60_000
 REPORT = 0.7
 REVIEW = 0.4
+SEVERITY_REVIEW = 0.75       # "high": enough on its own to reach review, never the attack list
 HOP_TECH = {"T1021", "T1078"}
 
 
@@ -35,10 +36,15 @@ def score(nodes: list[Node], stages: list[str]) -> tuple[float, dict]:
     V = max((n.severity for n in nodes), default=0.0)
     R = sum(n.rarity for n in nodes) / len(nodes) if nodes else 0.0
     S = 0.35 * min(T, T_MAX) / T_MAX + 0.20 * O + 0.15 * min(H, 3) / 3 + 0.20 * V + 0.10 * R
-    if T < 2:                         # a single tactic is noise, however severe (spec: require >=2 linked tactics)
-        S = min(S, REVIEW - 0.01)
+    # a single tactic is never a confident incident (spec: require >=2 linked tactics). A high-severity one
+    # driven from the internet (an account logging on from outside) still goes to an analyst for review:
+    # often the perimeter is all the logs show. Internal single-tactic admin work stays out.
+    external = V >= SEVERITY_REVIEW and any(is_external(r.get("src_ip")) for n in nodes for r in n.rows)
+    cap = REPORT - 0.01 if external else REVIEW - 0.01
+    if T < 2:
+        S = min(S, cap)
     if len(labelled) < 2:
-        S = min(S, REVIEW - 0.01)
+        S = min(S, cap)
     return round(S, 3), {"tactics": T, "order": round(O, 3), "hosts": H, "severity": round(V, 3),
                          "rarity": round(R, 3)}
 
@@ -106,11 +112,7 @@ def build_steps(nodes: list[Node]) -> list[dict]:
         if s["host"]:
             seen.add(s["host"])
         sub = subs.most_common(1)[0][0] if subs else None
-        ev = []
-        for r in rows:
-            e = f"{r['src_file']}:{r['line']}"
-            if e not in ev:
-                ev.append(e)
+        ev = list(dict.fromkeys(f"{r['src_file']}:{r['line']}" for r in rows))    # unique, in order
         out.append({
             "order": i, "ts": s["ts"], "time": iso(s["ts"]), "host": s["host"], "user": _step_user(rows),
             "technique": s["technique"], "sub_technique": sub,

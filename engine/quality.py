@@ -14,15 +14,13 @@ import os
 
 import duckdb
 
-from .store.db import TS_MIN
+from .store.db import DUP_KEY, TS_MIN
 
 LATE_TOLERANCE_MS = 5 * 60_000
 UNKNOWN_TYPES = ("generic", "jsonl", "json_stream", "csv", "tsv", "kv", "xml_events", "syslog", "cef", "leef")
 USER_EXPECTED = ("win:4624", "win:4625", "win:4688", "win:4672", "sysmon:1", "auth:success", "auth:fail",
                  "auth:sudo", "audit:execve")
 PROC_EXPECTED = ("win:4688", "sysmon:1", "sysmon:3", "sysmon:10", "sysmon:11", "audit:execve")
-DUP_KEY = ("hash(ts, host, event_type, \"user\", process, cmdline, target, src_ip, dst_ip, dst_port, bytes_out, "
-           "logon_id, src_file)")
 DUP_KEY_CROSS = ("hash(ts, host, event_type, \"user\", process, cmdline, target, src_ip, dst_ip, dst_port, bytes_out, "
                  "logon_id)")
 
@@ -128,6 +126,7 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
         "total_records": recs,
         "successfully_parsed": recs - malformed,
         "malformed_records": malformed,
+        "binary_lines_skipped": ingest_report.get("binary_lines", 0),
         "missing_critical_fields": {
             "timestamp": t["ts_missing"], "host": t["host_missing"], "event_type": t["type_missing"],
             "user_where_expected": t["user_missing"], "source_of_remote_logon": t["remote_logon_no_source"],
@@ -201,10 +200,9 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
     for sk in ingest_report.get("skipped") or []:
         warn("medium", f"file {sk['file']} was not read: {sk['reason']}")
     for rel, f in (ingest_report.get("files") or {}).items():
-        if f.get("binary"):
-            lo, hi = f.get("binary_lines") or ("?", "?")
-            warn("high", f"{rel}: {f['binary']:,} lines are binary/corrupt content (lines {lo}-{hi}); skipped, "
-                         f"not turned into events")
+        if f.get("binary_lines"):
+            warn("high", f"{rel}: {f['binary_lines']:,} lines ({f.get('binary_bytes', 0) / 2**20:.0f} MB) are "
+                         f"binary/corrupt content; skipped, not turned into events")
     if rates["malformed_pct"] >= 1:
         warn("high", f"{malformed:,} records ({rates['malformed_pct']}%) matched no parser; kept as raw text "
                      f"(generic) so keyword rules still see them, but fields are guessed")
@@ -247,7 +245,6 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
     for cap in tel["missing_capabilities"]:
         warn("medium", f"no {cap} in this dataset: detections that need it cannot fire")
     summary["files_skipped"] = len(ingest_report.get("skipped") or [])
-    summary["binary_lines_skipped"] = ingest_report.get("binary_lines_skipped", 0)
     return {"summary": summary, "rates": rates, "skipped_files": ingest_report.get("skipped") or [], "quality_score": round(score, 1), "warnings": warnings,
             "files": files, "hosts": hosts, "unknown_event_types": unknown_top,
             "late_tolerance_ms": LATE_TOLERANCE_MS, "telemetry": tel, "detectors_disabled": {}}

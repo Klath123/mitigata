@@ -9,6 +9,8 @@ from __future__ import annotations
 import bisect
 from collections import defaultdict
 from dataclasses import dataclass, field
+from functools import cached_property
+from itertools import chain
 
 import duckdb
 import networkx as nx
@@ -22,7 +24,6 @@ SYSTEM_LOGON_IDS = {"0x3e7", "0x3e4", "0x3e5", "0x0"}
 LOGON_TYPES = {"win:4624", "auth:success", "win:5140", "win:5145"}
 MAX_FANOUT = 60
 HOP_LOOKBACK = 24 * 3_600_000
-MAX_ROWS_PER_NODE = 200
 SIGMA_STEP_MIN = 0.6                      # Sigma 'high' and above can be incident steps
 NETWORK_TYPES = {"net:flow", "fw:flow", "zeek:conn", "fw:ips", "fw:av", "fw:web", "fw:app", "dns:query"}
 REMOTE_REQUEST = {"win:4769", "win:4768", "win:4776"}   # logged on the DC, naming the requesting host
@@ -78,24 +79,25 @@ class Node:
     rarity: float
     rows: list[dict] = field(default_factory=list)
     noisy: bool = False                   # rule fires far too often in this dataset: strong links only
-    n_rows: int = 0                       # true number of evidence rows (rows holds at most MAX_ROWS_PER_NODE)
+    rows_total: int = 0          # evidence rows in DuckDB; `rows` may hold a sample of a very large hit
 
-    @property
+    # rows are final once load_nodes returns, and these are read many times while linking and scoring
+    @cached_property
     def ts(self) -> int:
         return min(r["ts"] for r in self.rows if r["ts"] is not None) if self.rows else 0
 
-    @property
+    @cached_property
     def ts_end(self) -> int:
         return max(r["ts"] for r in self.rows if r["ts"] is not None) if self.rows else 0
 
     def vals(self, col: str) -> set:
         return {r[col] for r in self.rows if r.get(col) not in (None, "")}
 
-    @property
+    @cached_property
     def hosts(self) -> set:
         return self.vals("host")
 
-    @property
+    @cached_property
     def users(self) -> set:
         return {u for u in self.vals("user") if not is_system_account(u)}
 
@@ -104,26 +106,36 @@ class Node:
         return sorted({f"{r['src_file']}:{r['line']}" for r in self.rows})
 
 
+MAX_NODE_ROWS = 500          # evidence rows per hit held in memory for linking; the rest stay in DuckDB
+NODE_HEAD_ROWS = 200        # first rows kept per hit (a brute-force step can be 50+ identical rows)
+
+
 def load_nodes(con: duckdb.DuckDBPyConnection, resolver: IpResolver) -> dict[str, Node]:
-    # low/medium Sigma hits stay in `hits` (labels, blind scoring, the evidence index) but do not become
+    # low/medium Sigma / Hayabusa hits stay in `hits` (labels, blind scoring, the evidence index) but are not
     # incident steps: on real data they fire on routine activity and flood the review queue
-    # a hit keeps at most MAX_ROWS_PER_NODE evidence rows in memory (earliest first) plus its true row count:
-    # a noisy rule's hit can carry millions of identical rows that add nothing to linking or the story
-    cur = con.execute(f"""SELECT *, count(*) OVER (PARTITION BY hit_key) AS n_rows__ FROM hits
-                          WHERE NOT (kind IN ('sigma', 'hayabusa') AND severity < {SIGMA_STEP_MIN})
-                          QUALIFY row_number() OVER (PARTITION BY hit_key ORDER BY ts, src_file, line) <= {MAX_ROWS_PER_NODE}
-                          ORDER BY ts""")
+    # keep the first rows, the last row (time span) and the first row of every distinct
+    # host/user/source/destination combination (every linkable value), up to MAX_NODE_ROWS per hit
+    cur = con.execute(f"""
+    WITH h AS (
+      SELECT *, count(*) OVER (PARTITION BY hit_key) AS rows_total__,
+             row_number() OVER (PARTITION BY hit_key ORDER BY ts, src_file, line) AS rn__,
+             row_number() OVER (PARTITION BY hit_key ORDER BY ts DESC, src_file DESC, line DESC) AS rl__,
+             row_number() OVER (PARTITION BY hit_key, host, "user", src_ip, dst_ip ORDER BY ts, src_file, line) AS rc__
+      FROM hits WHERE NOT (kind IN ('sigma', 'hayabusa') AND severity < {SIGMA_STEP_MIN})),
+    k AS (SELECT *, row_number() OVER (PARTITION BY hit_key ORDER BY rl__ = 1 DESC, rn__) AS kn__
+          FROM h WHERE rn__ <= {NODE_HEAD_ROWS} OR rl__ = 1 OR rc__ = 1)
+    SELECT * EXCLUDE (rn__, rl__, rc__, kn__) FROM k WHERE kn__ <= {MAX_NODE_ROWS} ORDER BY ts""")
     cols = [d[0] for d in cur.description]
     nodes: dict[str, Node] = {}
-    for row in cur.fetchall():
+    for row in chain.from_iterable(iter(lambda: cur.fetchmany(50_000), [])):   # stream, never all hits twice
         r = dict(zip(cols, row))
+        total = r.pop("rows_total__")
         n = nodes.get(r["hit_key"])
         if n is None:
             n = nodes[r["hit_key"]] = Node(r["hit_key"], r["rule_id"], r["rule_title"], r["kind"], r["technique"],
                                            r["sub_technique"], r["tactic"], r["severity"] or 0.0, r["rarity"] or 0.0,
-                                           noisy=bool(r.get("noisy")))
+                                           noisy=bool(r.get("noisy")), rows_total=total)
         n.severity = max(n.severity, r["severity"] or 0.0)
-        n.n_rows = r.pop("n_rows__") or 1
         # resolve the source host of logons/flows once
         src_h = r.get("src_host")
         if is_external(r.get("src_ip")):
