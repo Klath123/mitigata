@@ -43,7 +43,14 @@ fields:
   parent_guid: [ParentProcessGuid, process.parent.entity_id, parent_guid]
   cmdline: [CommandLine, process.command_line, cmdline, command_line, CommandLineArgs, Details, cmd, command,
             ImagePath, registry.data.strings]
-  target: [TargetFilename, TargetObject, TargetImage, ObjectName, ShareName, TaskName, ServiceName, QueryName,
+  parent_cmdline: [ParentCommandLine, process.parent.command_line, parent_command_line, parent_cmdline]
+  original_file_name: [OriginalFileName, process.pe.original_file_name, original_file_name, OriginalFilename]
+  hashes: [Hashes, Hash, process.hash.sha256, file.hash.sha256, sha256, SHA256, hashes, md5, MD5]
+  integrity_level: [IntegrityLevel, process.integrity_level, integrity_level, MandatoryLabel]
+  image_loaded: [ImageLoaded, dll.path, file.path_loaded, image_loaded]
+  signed: [Signed, signed, dll.code_signature.trusted, SignatureStatus, dll.code_signature.status]
+  ticket_encryption: [TicketEncryptionType, ticket_encryption, winlog.event_data.TicketEncryptionType]
+  target: [TargetFilename, TargetObject, TargetImage, ObjectName, ShareName, TaskName, ServiceName, QueryName, PipeName,
            file.path, registry.path, dns.question.name, file_path, filename, fname, cs-uri-stem, uri, url, request, url.original, path, target]
   target_guid: [TargetProcessGuid, target_guid]
   target_user: [target_user, MemberName, SamAccountName, duser_target]

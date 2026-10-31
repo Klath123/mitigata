@@ -33,8 +33,9 @@ def scenario_d(w: World, aid: int, t0: int) -> Attack:
                     parent_cmd=f"C:\\Windows\\explorer.exe /select,C:\\Users\\{u}\\Downloads\\Q3_report.lnk")
     at.step("T1218", "T1218.011", "Defense Evasion", L, u, "Shortcut runs a DLL through rundll32", e1)
     beacon = []
-    for k in range(12):                                     # beacon every ~5 min for an hour
-        ts = t0 + 30_000 + k * r.randint(270_000, 330_000)
+    ts = t0 + 30_000
+    for k in range(12):                                     # beacon every ~5 min (+-10% jitter) for an hour
+        ts += r.randint(270_000, 330_000)
         beacon += A.netconn(w, ts, L, u, SYS32 + "rundll32.exe", rg, lip, C, 443)
         beacon += A.flow(w, ts, lip, C, 443, r.randint(800, 3000), r.randint(2000, 9000))
     at.step("T1071", "T1071.001", "Command and Control", L, u, f"rundll32 beacons to {C}:443", beacon)

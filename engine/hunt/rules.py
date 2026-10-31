@@ -13,6 +13,7 @@ import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RULES_DIR = os.path.join(ROOT, "rules")
+NOISY_MIN, NOISY_PER_HOST_DAY = 30, 0.5
 SEVERITY = {"info": 0.1, "informational": 0.1, "low": 0.25, "medium": 0.5, "high": 0.75, "critical": 1.0}
 
 HIT_COLS = ["src_file", "line", "ts", "host", "user", "domain", "src_ip", "dst_ip", "dst_port", "src_host", "dst_host",
@@ -131,8 +132,21 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
     rules = rules if rules is not None else load_rules()
     con.execute(HITS_DDL)
     stats = {}
+    have: dict[tuple, int] = {}
     for r in rules:
         t0 = time.time()
+        req = r.get("requires") or {}
+        if req:                           # telemetry the rule needs: say why it can't run instead of returning 0
+            ets, flds = tuple(req.get("event_types") or ()), tuple(req.get("fields") or ())
+            if (ets, flds) not in have:
+                where = [f"event_type IN ({', '.join(_lit(e) for e in ets)})"] if ets else []
+                where += [f'"{f}" IS NOT NULL' for f in flds]
+                have[(ets, flds)] = con.execute("SELECT count(*) FROM (SELECT 1 FROM events WHERE "
+                                                + (" AND ".join(where) or "TRUE") + " LIMIT 1)").fetchone()[0]
+            if not have[(ets, flds)]:
+                stats[r["id"]] = {"hits": 0, "disabled": f"no {'/'.join(ets) or 'events'} with "
+                                                          f"{', '.join(flds) or 'any fields'}"}
+                continue
         try:
             cols = {c[0] for c in con.execute(f"DESCRIBE ({r['sql']})").fetchall()}
         except Exception as ex:                                # broken rule from config: skip, keep going
@@ -168,14 +182,23 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
         except Exception as ex:
             stats[r["id"]] = {"error": str(ex).splitlines()[0][:300]}
             log(f"  rule {r['id']}: ERROR {stats[r['id']]['error']}")
-    # one row per (rule, evidence line); rarity = how unusual this rule+process signature is dataset-wide
+    # one row per (rule, evidence line); rarity = how unusual this rule+process signature is dataset-wide;
+    # noisy = the rule fires far more often than an attack could, relative to hosts x days in THIS dataset:
+    # such hits join an incident only through strong evidence links (graph/build.py WEAK_LINKS)
+    hosts, days = con.execute("SELECT count(DISTINCT host), greatest(1, (max(ts) - min(ts)) / 86400000.0) "
+                              "FROM events WHERE ts IS NOT NULL").fetchone()
+    noisy_at = max(NOISY_MIN, NOISY_PER_HOST_DAY * (hosts or 1) * (days or 1))
     con.execute("""
     CREATE OR REPLACE TABLE hits AS
     WITH d AS (SELECT DISTINCT ON (rule_id, src_file, line) * FROM hits)
     SELECT d.*, 1.0 / (1 + log10(1 + count(DISTINCT hit_key) OVER (
-                 PARTITION BY rule_id, coalesce(lower(regexp_extract(process, '[^\\\\/]+$')), event_type)))) AS rarity
+                 PARTITION BY rule_id, coalesce(lower(regexp_extract(process, '[^\\\\/]+$')), event_type)))) AS rarity,
+           count(DISTINCT hit_key) OVER (PARTITION BY rule_id) > """ + str(noisy_at) + """ AS noisy
     FROM d
     """)
+    for rid, n in con.execute("SELECT rule_id, count(DISTINCT hit_key) FROM hits WHERE noisy GROUP BY 1").fetchall():
+        if rid in stats:
+            stats[rid]["noisy"] = f"{n} hits > {noisy_at:.0f} (hosts x days x {NOISY_PER_HOST_DAY})"
     return stats
 
 

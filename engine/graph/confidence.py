@@ -7,6 +7,8 @@ WEIGHTS = {
     "same_process": 0.95,       # two hits on the same process GUID
     "session": 0.9,             # same LogonId on the same host
     "logon_hop": 0.8,           # logon on B whose source IP was A's at that time
+    "logon_hop_late": 0.6,      # same, but A's activity was 2-24 h before the logon
+    "remote_request": 0.6,      # Kerberos/NTLM request on a DC from host A, near suspicious activity on A
     "service_after_logon": 0.75,  # service/system activity right after a remote admin logon on that host
     "same_external_ip": 0.8,    # same internet IP in both hits
     "shared_ioc": 0.7,          # flagged hits sharing a specific artifact (C2 IP/domain, payload, malware name)

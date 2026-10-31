@@ -284,6 +284,8 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
         t = time.time()
         log("[3/6] hunt")
         rule_stats = run_rules(con, log=log)
+        quality.add_disabled(q, rule_stats)
+        quality.write(out, q)
         stages["detection"] = round(time.time() - t, 2)
         n_hits = con.execute("SELECT count(*) FROM hits").fetchone()[0]
         log(f"  {n_hits} hit rows from {len(rule_stats)} rules")

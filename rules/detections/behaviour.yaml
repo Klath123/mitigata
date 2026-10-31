@@ -1,0 +1,218 @@
+# Behaviour detectors: no tool names. Each learns "normal" from THIS dataset (prevalence across hosts,
+# first-seen after the warm-up, percentiles) and gives a WEAK score; correlation turns a chain of them into
+# an incident. On datasets too short for a warm-up (warmup_end > ds_end) first-seen falls back to prevalence.
+# `requires` lists the telemetry a detector needs; without it the detector is reported as disabled.
+rules:
+  - id: behav_rare_parent_child
+    title: Process started by a parent it is (almost) never started by in this environment
+    technique: T1059
+    tactic: Execution
+    severity: 0.3
+    kind: behaviour
+    requires: {event_types: [sysmon:1, win:4688, audit:execve], fields: [parent]}
+    sql: |
+      WITH p AS (
+        SELECT e.*, bn(e.parent) AS pb__, bn(e.process) AS cb__ FROM events e
+        WHERE is_proc(e.event_type) AND e.parent IS NOT NULL AND e.process IS NOT NULL),
+      pair AS (SELECT pb__, cb__, count(*) AS n__, count(DISTINCT host) AS nh__, min(ts) AS first__
+               FROM p GROUP BY 1, 2),
+      par AS (SELECT pb__, count(*) AS np__ FROM p GROUP BY 1),
+      hosts AS (SELECT count(DISTINCT host) AS H__ FROM p)
+      SELECT p.* EXCLUDE (pb__, cb__),
+        p.host || '|' || p.pb__ || '>' || p.cb__ AS hit_key,
+        CASE WHEN p.cb__ IN ('rundll32.exe','regsvr32.exe','mshta.exe','msiexec.exe','installutil.exe','regasm.exe',
+                             'regsvcs.exe','msbuild.exe','cmstp.exe','odbcconf.exe','certutil.exe','bitsadmin.exe',
+                             'wmic.exe','forfiles.exe','pcalua.exe','msxsl.exe') THEN 'T1218'
+             WHEN p.pb__ IN ('winword.exe','excel.exe','powerpnt.exe','outlook.exe','acrord32.exe','chrome.exe',
+                             'msedge.exe','firefox.exe','iexplore.exe','explorer.exe') AND NOT shell_bin(p.cb__)
+                  AND NOT script_host(p.cb__) THEN 'T1204'
+             ELSE 'T1059' END AS technique,
+        CASE WHEN p.cb__ IN ('rundll32.exe','regsvr32.exe','mshta.exe') THEN 'T1218.011' END AS sub_technique,
+        CASE WHEN p.cb__ IN ('rundll32.exe','regsvr32.exe','mshta.exe','msiexec.exe','installutil.exe','regasm.exe',
+                             'regsvcs.exe','msbuild.exe','cmstp.exe','odbcconf.exe','certutil.exe','bitsadmin.exe',
+                             'wmic.exe','forfiles.exe','pcalua.exe','msxsl.exe') THEN 'Defense Evasion'
+             ELSE 'Execution' END AS tactic,
+        CASE WHEN sys_acct(p."user") THEN 0.2
+             WHEN shell_bin(p.cb__) OR script_host(p.cb__) THEN 0.4 ELSE 0.3 END AS hit_severity
+      FROM p JOIN pair USING (pb__, cb__) JOIN par USING (pb__), hosts
+      WHERE pair.nh__ <= greatest(1, hosts.H__ // 50) AND pair.n__ <= 5 AND par.np__ >= 3
+        AND (pair.first__ > getvariable('warmup_end') OR getvariable('warmup_end') > getvariable('ds_end'))
+        AND (p.pb__ NOT IN ('services.exe', 'msiexec.exe', 'trustedinstaller.exe', 'tiworker.exe', 'wuauclt.exe',
+                            'setup.exe', 'svchost.exe')
+             OR (p.pb__ IN ('services.exe', 'svchost.exe') AND (shell_bin(p.cb__) OR script_host(p.cb__))))
+
+  - id: behav_account_fanout
+    title: One account reaching many hosts it never used before, in a short window
+    technique: T1021
+    tactic: Lateral Movement
+    severity: 0.45
+    kind: behaviour
+    requires: {event_types: [win:4624, auth:success, win:4648]}
+    sql: |
+      WITH l AS (
+        SELECT e.*, CASE WHEN e.event_type = 'win:4648' THEN coalesce(e.dst_host, e.target) ELSE e.host END AS dst__,
+               CASE WHEN e.event_type = 'win:4648' THEN coalesce(e.target_user, e."user") ELSE e."user" END AS acct__
+        FROM events e
+        WHERE ((e.event_type = 'win:4624' AND e.logon_type IN (3, 10)) OR e.event_type IN ('auth:success', 'win:4648'))),
+      f AS (SELECT acct__, lower(split_part(dst__, '.', 1)) AS d__, min(ts) AS fts__ FROM l
+            WHERE acct__ IS NOT NULL AND NOT sys_acct(acct__) AND dst__ IS NOT NULL GROUP BY 1, 2),
+      nw AS (SELECT f.*, count(*) OVER (PARTITION BY acct__ ORDER BY fts__
+                    RANGE BETWEEN 3600000 PRECEDING AND CURRENT ROW) AS k__ FROM f
+             WHERE fts__ > getvariable('warmup_end') OR getvariable('warmup_end') > getvariable('ds_end')),
+      thr AS (SELECT greatest(3, coalesce(quantile_cont(k__, 0.995), 3)) AS t__ FROM nw),
+      burst AS (SELECT DISTINCT acct__ FROM nw, thr WHERE k__ >= t__)
+      SELECT l.* EXCLUDE (dst__, acct__), l.acct__ AS hit_user,
+             l.acct__ || '|fanout|' || CAST(l.ts // 3600000 AS VARCHAR) AS hit_key
+      FROM l JOIN f ON l.acct__ = f.acct__ AND lower(split_part(l.dst__, '.', 1)) = f.d__ AND l.ts = f.fts__
+      WHERE l.acct__ IN (SELECT acct__ FROM burst)
+
+  - id: behav_persistence_writable_path
+    title: Service or scheduled task whose program lives in a user-writable or temporary folder
+    technique: T1543
+    sub_technique: T1543.003
+    tactic: Persistence
+    severity: 0.35
+    kind: behaviour
+    requires: {event_types: [win:7045, win:4697, win:4698, win:4702, sysmon:13]}
+    sql: |
+      WITH s AS (
+        SELECT e.*, lc(coalesce(e.cmdline, '') || ' ' || coalesce(e.process, '')) AS c__ FROM events e
+        WHERE e.event_type IN ('win:7045', 'win:4697', 'win:4698', 'win:4702')
+           OR (e.event_type = 'sysmon:13' AND regexp_matches(lc(e.target), '\\services\\[^\\]+\\imagepath$'))),
+      w AS (SELECT s.* FROM s
+            WHERE regexp_matches(c__, '\\users\\[^\\]+\\(appdata|downloads|desktop|documents)\\|\\users\\public\\|\\programdata\\|\\windows\\temp\\|\\temp\\|\\tmp\\|\\perflogs\\|\\windows\\tasks\\|\\recovery\\|\\\\\\\\|\\\$recycle')
+               OR regexp_matches(c__, '^"?c:\\windows\\[^\\]+\.(exe|bat|cmd|ps1|vbs|dll)"?(\s|$)')),
+      rl AS (SELECT host, ts FROM events WHERE event_type = 'win:4624' AND logon_type IN (3, 10) AND NOT sys_acct("user"))
+      SELECT w.* EXCLUDE (c__),
+        CASE WHEN w.event_type IN ('win:4698', 'win:4702') THEN 'T1053' ELSE 'T1543' END AS technique,
+        CASE WHEN w.event_type IN ('win:4698', 'win:4702') THEN 'T1053.005' ELSE 'T1543.003' END AS sub_technique,
+        CASE WHEN EXISTS (SELECT 1 FROM rl WHERE rl.host = w.host AND rl.ts BETWEEN w.ts - 1800000 AND w.ts)
+             THEN 0.55 ELSE 0.35 END AS hit_severity
+      FROM w
+
+  - id: behav_credential_store
+    title: Credential store read or copied (SAM/SECURITY hive, NTDS.dit, shadow file, browser/vault stores)
+    technique: T1003
+    tactic: Credential Access
+    severity: 0.5
+    kind: behaviour
+    requires: {event_types: [sysmon:1, win:4688, audit:execve, sysmon:11, audit:read]}
+    sql: |
+      SELECT e.*,
+        CASE WHEN regexp_matches(lc(coalesce(e.cmdline, '') || ' ' || coalesce(e.target, '')), 'ntds\.dit') THEN 'T1003.003'
+             WHEN regexp_matches(lc(coalesce(e.cmdline, '') || ' ' || coalesce(e.target, '')), '/etc/shadow') THEN 'T1003.008'
+             WHEN regexp_matches(lc(coalesce(e.cmdline, '') || ' ' || coalesce(e.target, '')), 'login data|logins\.json|key[34]\.db|vaultcmd|\\credentials\\|\\vault\\') THEN 'T1555'
+             ELSE 'T1003.002' END AS sub_technique,
+        CASE WHEN regexp_matches(lc(coalesce(e.cmdline, '') || ' ' || coalesce(e.target, '')), 'login data|logins\.json|key[34]\.db|vaultcmd|\\credentials\\|\\vault\\') THEN 'T1555'
+             ELSE 'T1003' END AS technique
+      FROM events e
+      WHERE (is_proc(e.event_type) OR e.event_type IN ('sysmon:11', 'audit:read', 'audit:open'))
+        AND regexp_matches(lc(coalesce(e.cmdline, '') || ' ' || coalesce(e.target, '')),
+            'save\s+hklm\\(sam|security|system)\b|\\config\\(sam|security)\b|ntds\.dit|/etc/shadow|shadowcopy.*(sam|ntds)|\\login data|logins\.json|key[34]\.db|vaultcmd|esentutl.*/y')
+        AND NOT (e.event_type IN ('sysmon:11', 'audit:read', 'audit:open') AND bn(e.process) IN ('lsass.exe', 'svchost.exe', 'services.exe', 'sshd', 'login', 'passwd', 'unix_chkpwd', 'chrome.exe', 'msedge.exe', 'firefox.exe', 'sudo', 'su', 'cron'))
+
+  - id: behav_obfuscated_cmdline
+    title: Command line with obfuscation or in-memory download features, unusual for this host
+    technique: T1027
+    tactic: Defense Evasion
+    severity: 0.3
+    kind: behaviour
+    requires: {event_types: [sysmon:1, win:4688, audit:execve, ps:4104], fields: [cmdline]}
+    sql: |
+      WITH c AS (
+        SELECT e.*, coalesce(e.cmdline, e.message) AS t__ FROM events e
+        WHERE (is_proc(e.event_type) OR e.event_type = 'ps:4104') AND coalesce(e.cmdline, e.message) IS NOT NULL),
+      f AS (SELECT c.*,
+              (regexp_matches(t__, '[A-Za-z0-9+/]{60,}={0,2}'))::INT
+            + (regexp_matches(lc(t__), '\s[-/]e(nc|ncodedcommand|c)?\s+[a-z0-9+/=]{16,}'))::INT
+            + (regexp_matches(lc(t__), 'frombase64string|\[convert\]::|\bcertutil\b.*-decode|base64\s+-d'))::INT
+            + (regexp_matches(lc(t__), '\biex\b|invoke-expression|downloadstring|downloadfile|net\.webclient|invoke-webrequest|start-bitstransfer|curl\s.*\|\s*(ba)?sh|wget\s.*\|\s*(ba)?sh'))::INT
+            + (regexp_matches(lc(t__), 'https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'))::INT
+            + (regexp_matches(t__, '(\^.){4,}|(`.){4,}|("\s*\+\s*"){3,}|char\]\s*\d+'))::INT
+            + (regexp_matches(lc(t__), '-w(indowstyle)?\s+h(idden)?|-nop\b|-noni\b|bypass'))::INT AS feat__,
+              regexp_replace(lc(t__), '[0-9a-f]{8,}|\d+', '#', 'g') AS shape__
+            FROM c),
+      shapes AS (SELECT shape__, count(DISTINCT host) AS nh__ FROM f GROUP BY 1)
+      SELECT f.* EXCLUDE (t__, feat__, shape__),
+        CASE WHEN f.feat__ >= 3 THEN 0.5 WHEN f.feat__ = 2 THEN 0.35 ELSE 0.2 END AS hit_severity,
+        CASE WHEN regexp_matches(lc(f.t__), 'downloadstring|downloadfile|webclient|invoke-webrequest|bitstransfer|curl|wget')
+             THEN 'T1105' ELSE 'T1027' END AS technique,
+        CASE WHEN regexp_matches(lc(f.t__), 'downloadstring|downloadfile|webclient|invoke-webrequest|bitstransfer|curl|wget')
+             THEN 'Command and Control' ELSE 'Defense Evasion' END AS tactic
+      FROM f JOIN shapes USING (shape__)
+      WHERE f.feat__ >= 2 AND shapes.nh__ <= 2
+
+  - id: behav_beaconing
+    title: Regular, low-jitter connections from one host to one rare internet destination (C2 beacon)
+    technique: T1071
+    tactic: Command and Control
+    severity: 0.45
+    kind: behaviour
+    requires: {event_types: [sysmon:3, audit:connect, fw:flow, net:flow, zeek:conn], fields: [dst_ip]}
+    sql: |
+      WITH c AS (
+        SELECT e.*, CASE WHEN e.event_type IN ('sysmon:3', 'audit:connect') THEN e.host
+                         ELSE coalesce(host_of(e.src_ip, e.ts), e.src_ip) END AS h__
+        FROM events e
+        WHERE e.event_type IN ('sysmon:3', 'audit:connect', 'fw:flow', 'net:flow', 'zeek:conn') AND is_external(e.dst_ip)),
+      g AS (SELECT h__, dst_ip, ts, ts - lag(ts) OVER (PARTITION BY h__, dst_ip ORDER BY ts) AS d__ FROM c),
+      s AS (SELECT h__, dst_ip, count(d__) AS n__, avg(d__) AS m__, stddev_pop(d__) AS sd__ FROM g
+            WHERE d__ > 20000 GROUP BY 1, 2),
+      pop AS (SELECT dst_ip, count(DISTINCT h__) AS nh__ FROM c GROUP BY 1),
+      b AS (SELECT s.* FROM s JOIN pop USING (dst_ip)
+            WHERE s.n__ >= 6 AND s.m__ BETWEEN 30000 AND 7200000 AND s.sd__ <= 0.35 * s.m__ AND pop.nh__ <= 2)
+      SELECT c.* EXCLUDE (h__), c.h__ AS hit_host, c.h__ || '>' || c.dst_ip || '|beacon' AS hit_key,
+        CASE WHEN c.dst_port IN (80, 443, 8080, 8443) THEN 'T1071.001' END AS sub_technique
+      FROM c JOIN b ON c.h__ = b.h__ AND c.dst_ip = b.dst_ip
+
+  - id: behav_dns_tunnel
+    title: Many long, unique sub-domains of one rare domain (DNS tunnelling / exfiltration)
+    technique: T1048
+    sub_technique: T1048.003
+    tactic: Exfiltration
+    severity: 0.5
+    kind: behaviour
+    requires: {event_types: [sysmon:22, zeek:dns, dns:query]}
+    sql: |
+      WITH q AS (
+        SELECT e.*, lc(coalesce(e.target, e.dst_host)) AS n__ FROM events e
+        WHERE e.event_type IN ('sysmon:22', 'zeek:dns', 'dns:query') AND coalesce(e.target, e.dst_host) LIKE '%.%.%'),
+      d AS (SELECT q.*, regexp_extract(n__, '([a-z0-9-]+\.[a-z0-9-]+)$', 1) AS dom__, split_part(n__, '.', 1) AS lab__ FROM q),
+      agg AS (SELECT dom__, count(DISTINCT n__) AS uniq__, count(DISTINCT host) AS nh__, avg(length(lab__)) AS len__
+              FROM d GROUP BY 1)
+      SELECT d.* EXCLUDE (n__, dom__, lab__), d.host || '|dns|' || d.dom__ AS hit_key
+      FROM d JOIN agg USING (dom__)
+      WHERE agg.uniq__ >= 30 AND agg.nh__ <= 2 AND agg.len__ >= 16
+
+  - id: behav_kerberoast
+    title: One account requesting RC4 service tickets for several services in minutes (Kerberoasting)
+    technique: T1558
+    sub_technique: T1558.003
+    tactic: Credential Access
+    severity: 0.5
+    kind: behaviour
+    requires: {event_types: [win:4769], fields: [ticket_encryption]}
+    sql: |
+      WITH k AS (
+        SELECT e.*, split_part(e."user", '@', 1) AS u__ FROM events e
+        WHERE e.event_type = 'win:4769' AND lower(e.ticket_encryption) IN ('0x17', '0x18', '23', '24')
+          AND e.target IS NOT NULL AND NOT regexp_matches(lc(e.target), '^krbtgt|\$$')),
+      w AS (SELECT k.*, count(DISTINCT lc(target)) OVER (PARTITION BY u__ ORDER BY ts
+                   RANGE BETWEEN 600000 PRECEDING AND 600000 FOLLOWING) AS n__ FROM k)
+      SELECT w.* EXCLUDE (u__, n__), w.u__ AS hit_user, w.u__ || '|roast|' || CAST(w.ts // 3600000 AS VARCHAR) AS hit_key
+      FROM w WHERE n__ >= 3
+
+  - id: behav_dll_sideload
+    title: Unsigned DLL loaded by a program running outside the system and program folders
+    technique: T1574
+    sub_technique: T1574.002
+    tactic: Persistence
+    severity: 0.45
+    kind: behaviour
+    requires: {event_types: [sysmon:7], fields: [image_loaded]}
+    sql: |
+      SELECT e.* FROM events e
+      WHERE e.event_type = 'sysmon:7' AND e.image_loaded IS NOT NULL
+        AND lc(coalesce(e.signed, '')) IN ('false', 'unsigned', 'unavailable', 'invalid')
+        AND NOT regexp_matches(lc(e.process), '^c:\\windows\\(system32|syswow64|winsxs)\\|^c:\\program files')
+        AND NOT regexp_matches(lc(e.image_loaded), '^c:\\windows\\(system32|syswow64|winsxs|assembly|microsoft\.net)\\')

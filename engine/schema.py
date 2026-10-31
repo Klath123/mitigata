@@ -37,6 +37,13 @@ EVENT_FIELDS: list[tuple[str, pa.DataType]] = [
     ("parent", pa.string()),
     ("parent_guid", pa.string()),
     ("cmdline", pa.string()),
+    ("parent_cmdline", pa.string()),   # Sysmon ParentCommandLine
+    ("original_file_name", pa.string()),  # PE OriginalFileName: survives renaming the binary
+    ("hashes", pa.string()),           # Sysmon Hashes / file hash fields
+    ("integrity_level", pa.string()),  # Low | Medium | High | System
+    ("image_loaded", pa.string()),     # Sysmon 7 ImageLoaded (DLL)
+    ("signed", pa.string()),           # signature status of the image / DLL
+    ("ticket_encryption", pa.string()),  # Kerberos TicketEncryptionType (0x17 = RC4)
     ("target", pa.string()),       # file / registry key / target process / URL / share / task / service
     ("target_guid", pa.string()),  # Sysmon 10 TargetProcessGuid
     ("target_user", pa.string()),  # account acted on (4720 new user, 4728 member, 4648 explicit creds)

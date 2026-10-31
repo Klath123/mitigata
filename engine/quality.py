@@ -31,6 +31,51 @@ def _pct(n, d) -> float:
     return round(100.0 * n / d, 3) if d else 0.0
 
 
+# telemetry the detectors depend on: event type -> fields whose fill rate is reported
+TELEMETRY = {
+    "sysmon:1": ["process", "cmdline", "parent", "parent_cmdline", "user", "process_guid", "parent_guid", "hashes",
+                 "original_file_name", "integrity_level"],
+    "win:4688": ["process", "cmdline", "parent", "user"],
+    "audit:execve": ["process", "cmdline", "user"],
+    "sysmon:3": ["process", "dst_ip", "dst_port", "process_guid"],
+    "sysmon:7": ["process", "image_loaded", "signed"],
+    "sysmon:10": ["process", "target"],
+    "sysmon:11": ["process", "target"],
+    "sysmon:13": ["process", "target", "cmdline"],
+    "sysmon:22": ["process", "target"],
+    "win:4624": ["user", "logon_type", "src_ip", "logon_id"],
+    "win:4769": ["user", "target", "ticket_encryption"],
+    "win:7045": ["target", "cmdline"],
+    "win:4698": ["target", "cmdline"],
+    "ps:4104": ["message"],
+    "fw:flow": ["src_ip", "dst_ip", "dst_port", "bytes_out"],
+}
+CAPABILITIES = {  # what the analyst loses when a telemetry class is absent
+    "process creation (Sysmon 1 / 4688 / execve)": ("sysmon:1", "win:4688", "audit:execve"),
+    "process network connections (Sysmon 3)": ("sysmon:3",),
+    "DLL loads (Sysmon 7)": ("sysmon:7",),
+    "LSASS / process access (Sysmon 10)": ("sysmon:10",),
+    "logons (4624 / sshd)": ("win:4624", "auth:success"),
+    "Kerberos service tickets (4769)": ("win:4769",),
+    "network flows (firewall / Zeek)": ("fw:flow", "net:flow", "zeek:conn"),
+    "PowerShell script blocks (4104)": ("ps:4104",),
+}
+
+
+def telemetry(con: duckdb.DuckDBPyConnection) -> dict:
+    counts = dict(con.execute("SELECT event_type, count(*) FROM events GROUP BY 1").fetchall())
+    fields = {}
+    for et, cols in TELEMETRY.items():
+        if not counts.get(et):
+            continue
+        sel = ", ".join(f'count("{c}")' for c in cols)
+        vals = con.execute(f"SELECT count(*), {sel} FROM events WHERE event_type = ?", [et]).fetchone()
+        fields[et] = {c: _pct(v, vals[0]) for c, v in zip(cols, vals[1:])}
+    missing = [cap for cap, ets in CAPABILITIES.items() if not any(counts.get(e) for e in ets)]
+    return {"event_types": dict(sorted(counts.items(), key=lambda x: -x[1])[:60]), "field_fill_pct": fields,
+            "missing_capabilities": missing}
+
+
 def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
     ts_ok = f"ts BETWEEN {TS_MIN} AND epoch_ms(now()::TIMESTAMP) + {2 * 86_400_000}"
     unknown = "event_type IN (" + ",".join(f"'{t}'" for t in UNKNOWN_TYPES) + ")"
@@ -193,10 +238,22 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
                      f"and time-based ordering is unreliable")
         score = min(score, 70.0)                 # dataset-level problem: every record is fine, the timeline is not
 
+    tel = telemetry(con)
+    for cap in tel["missing_capabilities"]:
+        warn("medium", f"no {cap} in this dataset: detections that need it cannot fire")
     summary["files_skipped"] = len(ingest_report.get("skipped") or [])
     return {"summary": summary, "rates": rates, "skipped_files": ingest_report.get("skipped") or [], "quality_score": round(score, 1), "warnings": warnings,
             "files": files, "hosts": hosts, "unknown_event_types": unknown_top,
-            "late_tolerance_ms": LATE_TOLERANCE_MS}
+            "late_tolerance_ms": LATE_TOLERANCE_MS, "telemetry": tel, "detectors_disabled": {}}
+
+
+def add_disabled(q: dict, rule_stats: dict) -> None:
+    """After the hunt: list rules that could not run on this dataset, and why."""
+    dis = {k: v["disabled"] for k, v in rule_stats.items() if v.get("disabled")}
+    q["detectors_disabled"] = dis
+    if dis:
+        q["warnings"].append({"level": "medium", "text": f"{len(dis)} detectors disabled for missing telemetry "
+                                                          f"(see detectors_disabled)"})
 
 
 def for_incident(q: dict, steps: list[dict], gaps: list[dict]) -> dict:

@@ -21,6 +21,11 @@ MIN = 60_000
 SYSTEM_LOGON_IDS = {"0x3e7", "0x3e4", "0x3e5", "0x0"}
 LOGON_TYPES = {"win:4624", "auth:success", "win:5140", "win:5145"}
 MAX_FANOUT = 60
+HOP_LOOKBACK = 24 * 3_600_000
+REMOTE_REQUEST = {"win:4769", "win:4768", "win:4776"}   # logged on the DC, naming the requesting host
+# links that only say "near in time / same account / same host"; strong ones (GUID, session, logon hop) always count
+WEAK_LINKS = {"same_account", "same_account_weak", "time_proximity", "compromised_host", "same_external_ip",
+              "shared_ioc"}
 # techniques whose command line / registry data is a payload worth matching across hosts
 IOC_TECHNIQUES = {"T1059", "T1547", "T1204", "T1105", "T1486", "T1053", "T1071", "T1041", "T1505"}
 COMMON_BINARIES = {"powershell.exe", "pwsh.exe", "cmd.exe", "rundll32.exe", "regsvr32.exe", "svchost.exe",
@@ -69,6 +74,7 @@ class Node:
     severity: float
     rarity: float
     rows: list[dict] = field(default_factory=list)
+    noisy: bool = False                   # rule fires far too often in this dataset: strong links only
 
     @property
     def ts(self) -> int:
@@ -103,7 +109,8 @@ def load_nodes(con: duckdb.DuckDBPyConnection, resolver: IpResolver) -> dict[str
         n = nodes.get(r["hit_key"])
         if n is None:
             n = nodes[r["hit_key"]] = Node(r["hit_key"], r["rule_id"], r["rule_title"], r["kind"], r["technique"],
-                                           r["sub_technique"], r["tactic"], r["severity"] or 0.0, r["rarity"] or 0.0)
+                                           r["sub_technique"], r["tactic"], r["severity"] or 0.0, r["rarity"] or 0.0,
+                                           noisy=bool(r.get("noisy")))
         n.severity = max(n.severity, r["severity"] or 0.0)
         # resolve the source host of logons/flows once
         src_h = r.get("src_host")
@@ -138,6 +145,8 @@ class Linker:
     def add(self, a: str, b: str, kind: str, w: float | None = None) -> None:
         if a == b:
             return
+        if kind in WEAK_LINKS and (self.nodes[a].noisy or self.nodes[b].noisy):
+            return                        # a noisy rule must not glue unrelated activity together
         k = (a, b) if a < b else (b, a)
         w = WEIGHTS[kind] if w is None else w
         self.reasons[k][kind] = max(self.reasons[k].get(kind, 0.0), w)
@@ -307,25 +316,43 @@ class Linker:
         return [r for r in n.rows if r.get("event_type") in LOGON_TYPES and r.get("src_h") and r["src_h"] != r.get("host")]
 
     def _logon_hops(self, host_sorted, host_ts) -> None:
-        """A logon on Y from X links to meaningful hits on X shortly before it (the attacker came from X)."""
+        """A logon on Y from X links to meaningful hits on X before it (the attacker came from X). Attackers often
+        wait hours before moving on, so the look-back is a day, with a lower weight past 2 h.
+        Servers and DCs start logons to other machines all day, so from them the look-back stays 2 h.
+        A Kerberos/NTLM request logged on a DC links the same way to hits on the requesting host (+-1 h)."""
         N = self.nodes
+        try:
+            roles = dict(self.con.execute("SELECT host, role FROM hosts").fetchall())
+        except duckdb.Error:
+            roles = {}
         for k, n in N.items():
             for r in self._hop_rows(n):
                 x, t = r["src_h"], r["ts"]
                 if x not in host_sorted:
                     continue
                 ts = host_ts[x]
-                lo = bisect.bisect_left(ts, t - 2 * HOUR)
+                back = HOP_LOOKBACK if roles.get(x, "workstation") in ("workstation", "unknown") else 2 * HOUR
+                lo = bisect.bisect_left(ts, t - back)
                 hi = bisect.bisect_right(ts, t + 5 * MIN)
                 for other in host_sorted[x][lo:hi]:
                     if other in self.attribution:       # already explained by another (unflagged) session
                         continue
                     o = N[other]
                     if o.severity >= 0.45 or o.technique in ("T1003", "T1552"):
-                        w = WEIGHTS["logon_hop"]
+                        w = WEIGHTS["logon_hop"] if t - o.ts_end <= 2 * HOUR else WEIGHTS["logon_hop_late"]
                         if o.technique in ("T1003", "T1552"):        # credentials stolen here, used to hop
                             self.add(k, other, "reused_credential")
                         self.add(k, other, "logon_hop", w)
+            for r in n.rows:
+                if r.get("event_type") not in REMOTE_REQUEST or not r.get("src_h") or r["src_h"] == r.get("host"):
+                    continue
+                x, t = r["src_h"], r["ts"]
+                if x not in host_sorted:
+                    continue
+                ts = host_ts[x]
+                for other in host_sorted[x][bisect.bisect_left(ts, t - HOUR):bisect.bisect_right(ts, t + HOUR)]:
+                    if N[other].severity >= 0.3 and N[other].technique:
+                        self.add(k, other, "remote_request")
 
     def _system_activity(self, host_sorted) -> None:
         """Hits with no real user on host Y (services, flows, SYSTEM processes): attribute to the remote admin

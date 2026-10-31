@@ -32,6 +32,10 @@ FIELD_MAP = {
     "logonid": "logon_id", "targetlogonid": "logon_id", "subjectlogonid": "logon_id",
     "memberename": "target_user", "membername": "target_user", "samaccountname": "target_user",
     "cs-method": "action", "sc-status": "status", "cs-user-agent": "message", "c-useragent": "message",
+    "parentcommandline": "parent_cmdline", "originalfilename": "original_file_name", "hashes": "hashes",
+    "hash": "hashes", "integritylevel": "integrity_level", "imageloaded": "image_loaded",
+    "signed": "signed", "signaturestatus": "signed", "ticketencryptiontype": "ticket_encryption",
+    "pipename": "target",
 }
 NUMERIC = {"logon_type", "dst_port", "src_port"}
 
@@ -53,6 +57,15 @@ CATEGORY = {
     "webserver": "e.event_type = 'web:req'",
     "proxy": "e.event_type = 'web:req'",
     "firewall": "e.event_type IN ('net:flow','zeek:conn')",
+    "pipe_created": "e.event_type IN ('sysmon:17','sysmon:18')",
+    "driver_load": "e.event_type = 'sysmon:6'",
+    "file_delete": "e.event_type IN ('sysmon:23','sysmon:26')",
+    "registry_delete": "e.event_type = 'sysmon:12'",
+    "create_stream_hash": "e.event_type = 'sysmon:15'",
+    "wmi_event": "e.event_type IN ('sysmon:19','sysmon:20','sysmon:21')",
+    "ps_module": "e.event_type = 'ps:4103'",
+    "ps_classic_start": "e.event_type = 'ps:400'",
+    "ps_classic_provider_start": "e.event_type = 'ps:600'",
 }
 SERVICE = {
     "security": "e.event_type LIKE 'win:%'", "system": "e.event_type LIKE 'win:%'",
