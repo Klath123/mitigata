@@ -4,7 +4,7 @@
   --accent: #5b8cff; --accent-soft: rgba(91, 140, 255, .13);
   --crit: #f0545a; --high: #f5803e; --med: #e8b730; --low: #34b27b;
   --crit-soft: rgba(240, 84, 90, .13); --high-soft: rgba(245, 128, 62, .13); --med-soft: rgba(232, 183, 48, .13); --low-soft: rgba(52, 178, 123, .13);
-  --edge: #a7b1c2; --edge-dash: #586374;
+  --edge: #a7b1c2; --edge-dash: #7a9ec7;
   --mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
   --radius: 12px; --shadow: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 8px 24px rgba(0, 0, 0, .25);
   color-scheme: dark;
@@ -15,7 +15,7 @@
   --accent: #3168ea; --accent-soft: rgba(49, 104, 234, .09);
   --crit: #dc3a40; --high: #e06a24; --med: #c99a12; --low: #24945f;
   --crit-soft: rgba(220, 58, 64, .09); --high-soft: rgba(224, 106, 36, .10); --med-soft: rgba(201, 154, 18, .12); --low-soft: rgba(36, 148, 95, .10);
-  --edge: #5a6576; --edge-dash: #a6afbc;
+  --edge: #5a6576; --edge-dash: #3a6db5;
   --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 6px 18px rgba(16, 24, 40, .05);
   color-scheme: light;
 }
@@ -229,6 +229,10 @@ mark { background: var(--med-soft); color: var(--text); border-radius: 3px; padd
 .viz { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: auto; box-shadow: var(--shadow); }
 .viz svg { display: block; }
 .viz text { fill: var(--text); font-family: inherit; }
+/* Kill map edge legend — sits below the SVG */
+.km-legend { display: flex; align-items: center; gap: 20px; padding: 10px 18px 12px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.km-legend svg { overflow: visible; }
+.km-legend text { fill: var(--muted); font-family: inherit; }
 .svg-node { cursor: pointer; }
 .svg-node:hover .nbox { stroke-width: 2.5; }
 .svg-node.sel .nbox { stroke: var(--accent); stroke-width: 3; }
