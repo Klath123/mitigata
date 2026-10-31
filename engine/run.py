@@ -29,7 +29,7 @@ from .lookahead import privmap
 from .lookahead.reach import build_graph as build_reach_graph, look_ahead
 import networkx as nx
 from . import quality
-from .narrate import checker, guard, llm, template
+from .narrate import guard, report
 from .results import manifest, store
 from .store.db import connect, dedup_events, set_dataset_vars
 
@@ -219,27 +219,7 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
         inc["key_entities"] = key_entities(g.subgraph(comp), nodes)
         inc["data_quality"] = quality.for_incident(q or {}, steps, inc["gaps"])
         # narration: template always; LLM if available, checked by code
-        story = checker.Story(steps)
-        tmpl = template.narrate(inc, steps)
-        t_ok = [s for s in tmpl if s.get("unchecked_entities") and all(c in story.rows for c in s["citations"])]
-        t_chk, t_drop = checker.check([s for s in tmpl if not s.get("unchecked_entities")], story)
-        report, source, dropped = t_chk + t_ok, "template", t_drop
-        if use_llm and S >= REPORT:
-            for attempt in range(2):
-                sents = llm.narrate(inc, steps)
-                if not sents:
-                    break
-                ok, bad = checker.check(sents, story)
-                if len(bad) <= 0.2 * len(sents):
-                    report, source, dropped = ok, f"llm:{llm.MODEL}", bad
-                    break
-        inc["report"] = sorted(report, key=lambda s: ["summary", "timeline", "movement", "impact", "look_ahead",
-                                                      "gaps", "recommendations"].index(s.get("section", "timeline"))
-                               if s.get("section", "timeline") in ("summary", "timeline", "movement", "impact",
-                                                                    "look_ahead", "gaps", "recommendations") else 9)
-        inc["report_source"] = source
-        inc["report_dropped"] = dropped
-        inc["grounding_rate"] = round(1 - len(dropped) / max(1, len(report) + len(dropped)), 3)
+        report.write(inc, steps, use_llm)       # verdict is set above: S >= REPORT is 'attack'
         inc["steps"] = [_strip(s) for s in steps]
         inc["navigator_layer"] = navigator.layer(inc)
         (incidents if inc["verdict"] == "attack" else review).append(inc)

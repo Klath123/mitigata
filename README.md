@@ -29,6 +29,7 @@ python -m eval.score data/s1 results/s1
 python -m engine.api results/s1          # or no argument: newest run; switch runs in the UI header
 #    one step: python -m engine.run data/s1 --out results/s1 --serve
 #    run made on a benchmark box: bash eval/pull_run.sh <key> <user@host> <remote-run-dir> <name>
+#    redo only the reports (new prompt/model, seconds): python -m engine.narrate results/s1
 
 # tests
 pytest

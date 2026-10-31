@@ -123,7 +123,7 @@ def generate_json(system: str, prompt: str, schema: dict, what: str) -> dict | N
             model=MODEL,
             system_instruction=system,
             input=prompt,
-            generation_config={"thinking_level": THINKING, "max_output_tokens": 16000},
+            generation_config={"thinking_level": THINKING, "max_output_tokens": 32000},
             response_format={"type": "text", "mime_type": "application/json", "schema": schema},
             store=False,                                   # log data is not kept server-side
         )
