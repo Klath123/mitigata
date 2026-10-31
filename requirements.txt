@@ -4,6 +4,7 @@ networkx>=3.2
 pyyaml>=6
 psutil>=5.9
 orjson>=3.9
+drain3>=0.9          # template discovery for unknown log formats (optional)
 fastapi>=0.110
 uvicorn>=0.29
 pydantic>=2.5

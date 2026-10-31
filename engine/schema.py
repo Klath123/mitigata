@@ -24,6 +24,9 @@ EVENT_FIELDS: list[tuple[str, pa.DataType]] = [
     ("proto", pa.string()),
     ("action", pa.string()),       # allow/deny/success/failure/...
     ("event_type", pa.string()),   # namespaced: win:4624, sysmon:1, fw:flow, auth:fail, web:req, audit:execve
+    ("type_source", pa.string()),  # how event_type was decided: native | pattern | semantic:<rule> | template | unknown
+    ("suggested_event_type", pa.string()),  # unapproved suggestion (AI/template); never used by detection
+    ("mapping_confidence", pa.float64()),   # confidence of the suggestion, 0-1
     ("logon_type", pa.int32()),
     ("logon_id", pa.string()),
     ("process", pa.string()),      # full image path or command name

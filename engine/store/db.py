@@ -5,6 +5,8 @@ import os
 
 import duckdb
 
+TS_MIN = 946_684_800_000          # 2000-01-01: anything earlier is a parse error, not a log
+
 
 def connect(run_dir: str, memory_limit: str = "6GB", threads: int | None = None,
             persist: bool = True) -> duckdb.DuckDBPyConnection:
@@ -19,7 +21,10 @@ def connect(run_dir: str, memory_limit: str = "6GB", threads: int | None = None,
     if threads:
         con.execute(f"SET threads={int(threads)}")
     glob = os.path.join(run_dir, "events", "*.parquet").replace(os.sep, "/")
-    con.execute(f"CREATE OR REPLACE VIEW events AS SELECT * FROM read_parquet('{glob}')")
+    con.execute(f"CREATE OR REPLACE VIEW events_all AS SELECT * FROM read_parquet('{glob}')")
+    # detection runs only on records that can be placed on a timeline; the rest are reported, not hidden
+    con.execute(f"CREATE OR REPLACE VIEW events AS SELECT * FROM events_all "
+                f"WHERE ts BETWEEN {TS_MIN} AND epoch_ms(now()::TIMESTAMP) + {2 * 86_400_000}")
     return con
 
 

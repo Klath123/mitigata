@@ -641,8 +641,14 @@ def parse_line_any(text: str, ctx: dict) -> dict:
     if "LEEF:" in text:
         return parse_leef_text(text[text.index("LEEF:"):])
     rec = {"message": text[:4000]}
+    if ctx.get("templates"):
+        from .templates import apply as apply_template
+        tpl = apply_template(text, ctx)
+        if tpl:
+            rec.update(tpl)
     if text.count("=") >= 2:
-        rec.update(parse_kv(text))
+        for k, v in parse_kv(text).items():
+            rec.setdefault(k, v)
     m = _TS_ANY.search(text)
     if m and "ts" not in rec:
         rec["ts"] = m.group(1)

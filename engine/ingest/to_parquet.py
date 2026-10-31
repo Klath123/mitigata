@@ -22,11 +22,10 @@ import pyarrow.parquet as pq
 
 from ..schema import EVENT_SCHEMA, FIELD_NAMES, RAW_MAX
 from .mapper import DEFAULT_FIELDS, Mapper, TimeParser
+from .discover import discover
 from .parsers import PARSERS, SPLITTABLE, iter_evtx, parse_line_any
 from .sniff import read_sample, sniff, year_hint
 
-SKIP_NAMES = {"ground_truth.json", "manifest.json", "files.json", "ingest_report.json"}
-SKIP_EXT = {".parquet", ".duckdb", ".pyc", ".exe", ".dll", ".png", ".jpg", ".pdf"}
 BATCH = 50_000
 _MAPPER: Mapper | None = None
 
@@ -74,56 +73,6 @@ def _dir_host(rel: str) -> str | None:
         if _HOSTISH.match(p):
             return p.upper()
     return None
-
-
-def discover(root: str, work: str) -> list[tuple[str, str]]:
-    """Returns [(physical_path, src_file_rel)], unpacking archives into work/unpacked."""
-    out = []
-    unpack = os.path.join(work, "unpacked")
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".") and os.path.abspath(os.path.join(dirpath, d))
-                       != os.path.abspath(work)]
-        for fn in sorted(filenames):
-            if fn in SKIP_NAMES or fn.startswith("."):
-                continue
-            path = os.path.join(dirpath, fn)
-            rel = os.path.relpath(path, root).replace("\\", "/")
-            ext = os.path.splitext(fn)[1].lower()
-            if ext in SKIP_EXT:
-                continue
-            if ext == ".zip":
-                with zipfile.ZipFile(path) as z:
-                    for m in z.namelist():
-                        if m.endswith("/"):
-                            continue
-                        dst = os.path.join(unpack, rel, m)
-                        os.makedirs(os.path.dirname(dst), exist_ok=True)
-                        with z.open(m) as src, open(dst, "wb") as d:
-                            shutil.copyfileobj(src, d, 1 << 20)
-                        out += _maybe_transcode(dst, f"{rel}!/{m}", work)
-                continue
-            if ext == ".gz":
-                dst = os.path.join(unpack, rel[:-3])
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                with gzip.open(path, "rb") as src, open(dst, "wb") as d:
-                    shutil.copyfileobj(src, d, 1 << 20)
-                out += _maybe_transcode(dst, rel, work)
-                continue
-            out += _maybe_transcode(path, rel, work)
-    return out
-
-
-def _maybe_transcode(path: str, rel: str, work: str) -> list[tuple[str, str]]:
-    with open(path, "rb") as f:
-        bom = f.read(2)
-    if bom in (b"\xff\xfe", b"\xfe\xff"):
-        dst = os.path.join(work, "unpacked", "utf8", rel.replace("!/", "/"))
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        enc = "utf-16"
-        with open(path, encoding=enc, errors="replace") as src, open(dst, "w", encoding="utf-8", newline="\n") as d:
-            shutil.copyfileobj(src, d, 1 << 20)
-        return [(dst, rel)]
-    return [(path, rel)]
 
 
 # ====================================================================== task planning
@@ -189,10 +138,17 @@ def run_task(t: dict) -> dict:
         ctx["preamble"] = False
     tp = TimeParser(_tz(t["tz"]), t["year"])
     seekable = fmt != "evtx"
+    line_count = [0]
+
+    def counted(it):
+        for x in it:
+            line_count[0] += 1
+            yield x
+
     if fmt == "evtx":
-        records = iter_evtx(t["path"])
+        records = counted(iter_evtx(t["path"]))
     else:
-        records = PARSERS[fmt](_iter_lines(t["path"], t["start"], t["end"], t["base_line"]), ctx)
+        records = PARSERS[fmt](counted(_iter_lines(t["path"], t["start"], t["end"], t["base_line"])), ctx)
     cols: dict[str, list] = {f: [] for f in FIELD_NAMES}
     writer = None
     st = {"rows": 0, "unparsed": 0, "no_ts": 0, "min_ts": None, "max_ts": None}
@@ -259,6 +215,7 @@ def run_task(t: dict) -> dict:
     flush()
     if writer:
         writer.close()
+    st["lines"] = line_count[0]
     st.update(task=t["id"], rel=t["rel"], fmt=fmt, bytes=t["end"] - t["start"], seconds=time.time() - t0,
               event_types=dict(etypes.most_common(40)), unmapped=dict(unmapped_c.most_common(25)),
               hosts=len(hosts), domains=sorted(mapper.domains)[:20])
@@ -275,11 +232,14 @@ def ingest(root: str, out: str, workers: int | None = None, chunk_mb: int = 32,
         shutil.rmtree(ev_dir)
     os.makedirs(ev_dir, exist_ok=True)
     manifest = load_manifest(root)
-    files = discover(root, out)
+    files, skipped = discover(root, out)
+    for sk in skipped:
+        log(f"  skip {sk['file']}: {sk['reason']}")
     gtz = manifest.get("timezone", "UTC")
 
     sniffed = []
     years = Counter()
+    template_report: dict[str, dict] = {}
     for path, rel in files:
         size = os.path.getsize(path)
         if size == 0:
@@ -294,6 +254,19 @@ def ingest(root: str, out: str, workers: int | None = None, chunk_mb: int = 32,
             y = year_hint(read_sample(path, 20))
             if y:
                 years[y] += 1
+        if fmt == "generic":
+            try:
+                from .templates import discover as discover_templates
+                tinfo = discover_templates(path)
+                ctx = {**ctx, "templates": tinfo["templates"]}
+                template_report[rel] = {k: tinfo[k] for k in ("sampled_lines", "coverage", "clusters_total")}
+                template_report[rel]["templates"] = [{k: t[k] for k in ("template", "count", "share", "example")}
+                                                     | {"fields": [x["name"] for x in t["slots"]]}
+                                                     for t in tinfo["templates"][:20]]
+                log(f"  templates {rel}: {len(tinfo['templates'])} templates cover "
+                    f"{100 * tinfo['coverage']:.0f}% of {tinfo['sampled_lines']:,} sampled lines")
+            except ImportError:
+                log("  templates: drain3 not installed, generic files use key=value / timestamp heuristics only")
         host = meta.get("host") or _dir_host(rel)
         sniffed.append((path, rel, size, fmt, ctx, host, meta.get("tz", gtz)))
         log(f"  sniff {rel}: {fmt} ({size / 2**20:.1f} MB){' host=' + host if host else ''}")
@@ -330,11 +303,11 @@ def ingest(root: str, out: str, workers: int | None = None, chunk_mb: int = 32,
     # ---------------------------------------------------------- report
     per_file: dict[str, dict] = {}
     for r in sorted(results, key=lambda r: r["task"]):
-        f = per_file.setdefault(r["rel"], {"format": r["fmt"], "bytes": 0, "rows": 0, "unparsed": 0, "no_ts": 0,
+        f = per_file.setdefault(r["rel"], {"format": r["fmt"], "bytes": 0, "lines": 0, "rows": 0, "unparsed": 0, "no_ts": 0,
                                            "min_ts": None, "max_ts": None, "event_types": Counter(),
                                            "unmapped": Counter(), "tasks": 0})
         f["tasks"] += 1
-        for k in ("bytes", "rows", "unparsed", "no_ts"):
+        for k in ("bytes", "lines", "rows", "unparsed", "no_ts"):
             f[k] += r[k]
         for k, fn in (("min_ts", min), ("max_ts", max)):
             if r[k] is not None:
@@ -345,8 +318,9 @@ def ingest(root: str, out: str, workers: int | None = None, chunk_mb: int = 32,
         f["event_types"] = dict(f["event_types"].most_common(25))
         f["unmapped"] = dict(f["unmapped"].most_common(15))
     total_bytes = sum(s[2] for s in sniffed)
-    report = {"root": os.path.abspath(root), "files": per_file, "year_assumed": year,
+    report = {"root": os.path.abspath(root), "files": per_file, "skipped": skipped, "templates": template_report, "year_assumed": year,
               "bytes": total_bytes, "rows": sum(f["rows"] for f in per_file.values()),
+              "lines": sum(f["lines"] for f in per_file.values()),
               "unparsed": sum(f["unparsed"] for f in per_file.values()),
               "seconds": round(time.time() - t0, 2), "workers": workers, "tasks": len(tasks)}
     report["mb_per_s"] = round(total_bytes / 2**20 / max(report["seconds"], 1e-6), 2)

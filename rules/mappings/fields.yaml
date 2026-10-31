@@ -140,11 +140,11 @@ channel_prefix:
 # normalized field names; `program` (optional) is matched against the syslog program name.
 message_patterns:
   - {program: sshd, event_type: "auth:fail", action: failure,
-     regex: 'Failed (?:password|publickey) for (?:invalid user )?(?P<user>\S+) from (?P<src_ip>[\d.:a-fA-F]+) port (?P<src_port>\d+)'}
+     regex: 'Failed (?:password|publickey|keyboard-interactive/pam|none) for (?:invalid user )?(?P<user>\S+) from (?P<src_ip>[\d.:a-fA-F]+)(?: port (?P<src_port>\d+))?'}
   - {program: sshd, event_type: "auth:success", action: success,
-     regex: 'Accepted (?:password|publickey|keyboard-interactive/pam) for (?P<user>\S+) from (?P<src_ip>[\d.:a-fA-F]+) port (?P<src_port>\d+)'}
+     regex: 'Accepted (?:password|publickey|keyboard-interactive/pam|gssapi-with-mic) for (?P<user>\S+) from (?P<src_ip>[\d.:a-fA-F]+)(?: port (?P<src_port>\d+))?'}
   - {program: sshd, event_type: "auth:invalid_user", action: failure,
-     regex: 'Invalid user (?P<user>\S+) from (?P<src_ip>[\d.:a-fA-F]+)'}
+     regex: 'Invalid user (?P<user>\S+) from (?P<src_ip>[\d.:a-fA-F]+)(?: port (?P<src_port>\d+))?'}
   - {program: sshd, event_type: "net:listen", regex: 'Server listening on (?P<host_ip>[\d.]+) port'}
   - {program: sudo, event_type: "auth:sudo", action: success,
      regex: '^\s*(?P<user>\S+) : .*?USER=(?P<target_user>\S+) ; COMMAND=(?P<cmdline>.+)$'}
@@ -157,3 +157,46 @@ message_patterns:
   - {program: dhclient, event_type: "dhcp:bound", regex: 'bound to (?P<host_ip>[\d.]+)'}
   - {event_type: "auth:fail", action: failure,
      regex: 'authentication failure;.*?rhost=(?P<src_ip>[\d.]+)?.*?user=(?P<user>\S+)'}
+
+# Event semantics: give a canonical type to records whose format is unknown but whose MEANING is
+# recognisable from field values. Applied only when no event id / parser / pattern typed the record.
+# Every rule needs ALL of its conditions: a context condition (what operation) AND an outcome condition,
+# so `status=failed` alone never becomes a login failure.
+#   fields: source field names (leaf, case-insensitive) or canonical fields; "message" = the raw line
+#   matches: regex (case-insensitive) that one of those fields must match
+event_semantics:
+  - name: auth_failure
+    event_type: "auth:fail"
+    action: failure
+    all:
+      - {fields: [action, operation, event, event_name, eventname, activity, category, type, msg, message, method, op],
+         matches: 'log[ _-]?(on|in)|sign[ _-]?in|auth|session|credential|password|ssh|rdp|vpn|kerberos|ntlm'}
+      - {fields: [status, result, outcome, action, operation, event, event_name, reason, msg, message, op],
+         matches: '\b(fail|failed|failure|denied|deny|reject|rejected|invalid|bad[ _-]?pass\w*|locked|unauthori[sz]ed)\b|_(fail|failed|failure|denied)\b'}
+  - name: auth_success
+    event_type: "auth:success"
+    action: success
+    all:
+      - {fields: [action, operation, event, event_name, eventname, activity, category, type, msg, message, method, op],
+         matches: 'log[ _-]?(on|in)|sign[ _-]?in|auth|session|credential|ssh|rdp|vpn'}
+      - {fields: [status, result, outcome, action, operation, event, event_name, msg, message, op],
+         matches: '\b(success|succeeded|successful|accepted|granted|allowed|ok)\b|_(success|succeeded|ok)\b'}
+      - {not_fields: [status, result, outcome, action, operation, event, event_name, reason, msg, message, op],
+         matches: '\b(fail|failed|failure|denied|reject|invalid)\b|_(fail|failed|failure|denied)\b'}
+  - name: process_start
+    event_type: "sysmon:1"
+    all:
+      - {fields: [action, operation, event, event_name, activity, type, op],
+         matches: 'exec|spawn|process[ _-]?(start|creat|launch)|proc[ _-]?start|command[ _-]?run'}
+      - {fields: [process, cmdline], matches: '.'}
+  - name: file_write
+    event_type: "sysmon:11"
+    all:
+      - {fields: [action, operation, event, event_name, activity, type, op],
+         matches: 'file[ _-]?(creat|writ|modif|renam|drop)'}
+      - {fields: [target], matches: '.'}
+  - name: account_created
+    event_type: "account:create"
+    all:
+      - {fields: [action, operation, event, event_name, activity, op, msg, message],
+         matches: '(user|account)[ _-]?(add|added|creat|created|new)|(add|creat|new)[ _-]?(user|account)'}

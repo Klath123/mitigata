@@ -1,0 +1,24 @@
+# Behavioural candidates for records whose event type is still UNKNOWN (unrecognised formats).
+# They key on field values and behaviour, not vendor event ids. Low severity by design: they can raise a
+# cluster for review but a single-tactic cluster never becomes a confident incident.
+rules:
+  - id: behav_fail_then_success
+    title: Possible brute force in an unrecognised log format (candidate)
+    technique: T1110
+    tactic: Credential Access
+    severity: 0.3
+    kind: behavioural
+    sequence:
+      first: >-
+        e.type_source = 'unknown' AND e."user" IS NOT NULL AND e.src_ip IS NOT NULL
+        AND regexp_matches(lc(coalesce(e.status, '') || ' ' || coalesce(e.action, '') || ' ' || coalesce(e.message, '')),
+            '\b(fail|failed|failure|denied|deny|invalid|reject|rejected|incorrect)\b|_(fail|failed|denied)\b')
+      by: [user, src_ip]
+      min_count: 3
+      gap: 10m
+      then: >-
+        e.type_source = 'unknown'
+        AND regexp_matches(lc(coalesce(e.status, '') || ' ' || coalesce(e.action, '') || ' ' || coalesce(e.message, '')),
+            '\b(success|succeeded|successful|accepted|granted|ok)\b|_(success|ok)\b')
+      within: 30m
+      emit: both

@@ -133,8 +133,16 @@ def create_app(run_dir: str | None = None) -> FastAPI:
         r = R()
         s = r.stats
         return {"dataset": s.get("dataset"), "processed": s.get("processed"), "stages_seconds": s.get("stages_seconds"),
-                "counts": s.get("counts"), "files": s.get("files"),
+                "counts": s.get("counts"), "files": s.get("files"), "data_quality": s.get("data_quality"),
                 "rules": {k: v for k, v in (s.get("rules") or {}).items() if v.get("hits") or v.get("error")}}
+
+    @app.get("/quality")
+    def data_quality():
+        p = os.path.join(R().run_dir, "quality.json")
+        if not os.path.exists(p):
+            raise HTTPException(404, "no data-quality report for this run")
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
 
     @app.post("/reload")
     def reload():

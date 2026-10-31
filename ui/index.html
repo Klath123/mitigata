@@ -39,6 +39,10 @@ pre{white-space:pre-wrap;word-break:break-all;background:var(--panel2);padding:8
 @media (prefers-color-scheme: light){:root:not([data-theme=dark]) .banner{background:#ffecec;color:#7a1414}}
 .kv{display:grid;grid-template-columns:110px 1fr;gap:2px 10px;font-size:12px}.kv div:nth-child(odd){color:var(--muted)}
 .empty{color:var(--muted);padding:20px}
+.w-high{border-left:4px solid var(--crit)}.w-medium{border-left:4px solid var(--high)}.w-low{border-left:4px solid var(--med)}
+.warn{padding:6px 10px;margin:4px 0;background:var(--panel2);border-radius:4px}
+.metric{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}
+.metric div{background:var(--panel2);border-radius:6px;padding:8px 10px;font-size:12px;color:var(--muted)}.metric b{display:block;font-size:18px;color:var(--text)}
 .counters{display:flex;gap:14px;flex-wrap:wrap}.counters div{font-size:12px;color:var(--muted)}.counters b{display:block;font-size:18px;color:var(--text)}
 a{color:var(--accent)}button.btn{background:var(--chip);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font:inherit;font-size:12px}
 @media (max-width:1100px){main{grid-template-columns:1fr;height:auto}aside,section{border-right:0;border-bottom:1px solid var(--line);max-height:none}}
@@ -49,6 +53,7 @@ a{color:var(--accent)}button.btn{background:var(--chip);color:var(--text);border
   <h1>AttackStory</h1>
   <span class="stat" id="s-data"></span>
   <span style="flex:1"></span>
+  <button class="btn" id="dqbtn">Data quality</button>
   <label class="stat"><input type="checkbox" id="rev"> show review clusters</label>
   <button class="btn" id="theme">theme</button>
 </header>
@@ -83,7 +88,8 @@ async function loadStats() {
     const s = await api("/stats"); const p = s.processed || {}, c = s.counts || {};
     $("#s-data").innerHTML = `<b>${esc(s.dataset)}</b> · ${(p.events||0).toLocaleString()} events · ${((p.bytes||0)/2**30).toFixed(2)} GB ·
       ${p.seconds}s · peak ${p.peak_memory_gb} GB · ${c.raw_hit_rows||0} raw hits → ${c.clusters||0} clusters →
-      <b>${c.attack_incidents||0}</b> incidents`;
+      <b>${c.attack_incidents||0}</b> incidents · data quality <b>${(s.data_quality||{}).score ?? "?"}</b>/100`;
+    $("#dqbtn").textContent = "Data quality " + ((s.data_quality||{}).score ?? "");
   } catch (e) { $("#s-data").textContent = "no results loaded"; }
 }
 
@@ -124,6 +130,10 @@ function renderCenter() {
     <div><b>${((inc.blast_radius||{}).potential||{}).potential_hosts?.length||0}</b>could reach next</div>
     <div style="flex:1"></div><div><a class="btn" href="/incidents/${inc.incident_id}/navigator">ATT&amp;CK Navigator layer</a>
     <a class="btn" href="/incidents/${inc.incident_id}/report?format=md" target="_blank">Report (markdown)</a></div></div>`;
+  const dq = inc.data_quality || {};
+  h += (dq.warnings||[]).length ? `<div class="card"><h3>Log quality for this incident — why the path may be incomplete</h3>${dq.warnings.map(w =>
+      `<div class="warn w-medium">${esc(w.text)}</div>`).join("")}</div>`
+    : `<p class="stat">Logs from ${esc((dq.hosts||[]).join(", "))} look complete for this incident (no missing fields, gaps or unusable timestamps).</p>`;
   const panes = {kill: killMap, hop: hopView, time: timeline, look: lookAhead, ioc: indicators, excl: excluded, steps: stepsTable};
   h += `<div class="pane on">${panes[state.tab]()}</div>`;
   $("#center").innerHTML = h;
@@ -269,6 +279,41 @@ async function showEvidence(ids, head = "") {
       `<div>${k}</div><div>${esc(k==="ts" ? new Date(e[k]).toISOString() : e[k])}</div>`).join("")}</div><pre>${esc(e.raw)}</pre></div>`).join("");
   $("#right").scrollTo({top: 0, behavior: "smooth"});
 }
+
+async function showQuality() {
+  document.querySelectorAll(".inc").forEach(el => el.classList.remove("sel"));
+  let q; try { q = await api("/quality"); } catch (e) { $("#center").innerHTML = '<div class="empty">No data-quality report for this run.</div>'; return; }
+  const s = q.summary, r = q.rates, m = s.missing_critical_fields;
+  const n = x => (x ?? 0).toLocaleString();
+  const cards = [["Total lines read", n(s.total_lines_read), "input coverage"], ["Records", n(s.total_records), "multi-line records count once"],
+    ["Successfully parsed", n(s.successfully_parsed), r.parsed_pct + "%"], ["Malformed", n(s.malformed_records), r.malformed_pct + "% kept as raw text"],
+    ["Missing timestamp", n(m.timestamp), ""], ["Invalid timestamp", n(s.invalid_timestamps), "before 2000 / in the future"],
+    ["Missing host", n(m.host), r.host_missing_pct + "%"], ["Account missing", n(m.user_where_expected), r.user_missing_pct + "% of logon/process"],
+    ["Remote logon w/o source", n(m.source_of_remote_logon), r.remote_logon_source_missing_pct + "%"],
+    ["Unknown event types", n(s.unknown_event_types), r.unknown_type_pct + "%"], ["Duplicates", n(s.duplicate_records), r.duplicate_pct + "%"],
+    ["Same event, 2+ sources", n(s.duplicate_records_across_sources), ""], ["Late-arriving", n(s.late_arriving_events), r.late_pct + "% (> " + q.late_tolerance_ms/60000 + " min)"],
+    ["Excluded from detection", n(s.records_excluded_from_detection), r.timestamp_missing_or_invalid_pct + "%"],
+    ["Used for detection", n(s.records_used_for_detection), ""], ["Hosts", n(s.hosts), ""]];
+  const files = q.files.map(f => `<tr><td>${esc(f.file)}</td><td>${esc(f.format)}</td><td>${n(f.lines)}</td><td>${n(f.records)}</td><td>${n(f.malformed)}</td>
+    <td>${n(f.timestamp_missing + f.timestamp_invalid)}</td><td>${n(f.host_missing)}</td><td>${n(f.unknown_type)}</td><td>${n(f.late)}</td>
+    <td class="stat">${esc((f.top_unmapped_fields||[]).join(", "))}</td></tr>`).join("");
+  const hosts = Object.entries(q.hosts).map(([h, v]) => [h, v]).filter(([h, v]) => v.excluded_from_detection || v.user_missing_pct >= 5 || v.remote_logon_source_missing_pct >= 5 || v.duplicates)
+    .sort((a, b) => (b[1].excluded_from_detection||0) - (a[1].excluded_from_detection||0)).slice(0, 30)
+    .map(([h, v]) => `<tr><td>${esc(h)}</td><td>${n(v.records)}</td><td>${n(v.excluded_from_detection)}</td><td>${v.user_missing_pct ?? ""}%</td>
+      <td>${v.remote_logon_source_missing_pct ?? ""}%</td><td>${n(v.duplicates)}</td><td>${esc((v.formats||[]).join(", "))}</td></tr>`).join("");
+  const unk = (q.unknown_event_types||[]).map(u => `<tr><td>${esc(u.event_type)}</td><td>${esc(u.file)}</td><td>${n(u.records)}</td></tr>`).join("");
+  $("#center").innerHTML = `<div class="pane on">
+    <div class="card"><h3>Data quality score: ${q.quality_score} / 100</h3><p class="stat">The reconstructed attack is only as complete as the logs. Nothing is silently dropped:
+      malformed lines are kept as raw text, and records without a usable timestamp stay stored but are left out of detection.</p>
+      ${q.warnings.length ? q.warnings.map(w => `<div class="warn w-${w.level}"><b>${w.level}</b> · ${esc(w.text)}</div>`).join("") : '<div class="warn">No data-quality problems found.</div>'}</div>
+    <div class="card"><div class="metric">${cards.map(c => `<div><b>${c[1]}</b>${c[0]}<br><span>${esc(c[2])}</span></div>`).join("")}</div></div>
+    <div class="card"><h3>Per file</h3><div style="overflow:auto"><table><tr><th>File</th><th>Format</th><th>Lines</th><th>Records</th><th>Malformed</th>
+      <th>Bad timestamp</th><th>No host</th><th>Unknown type</th><th>Late</th><th>Unmapped fields</th></tr>${files}</table></div></div>
+    ${unk ? `<div class="card"><h3>Unrecognised event types (add aliases in rules/mappings/fields.yaml)</h3><table><tr><th>Type</th><th>File</th><th>Records</th></tr>${unk}</table></div>` : ""}
+    <div class="card"><h3>Hosts with log problems</h3>${hosts ? `<table><tr><th>Host</th><th>Records</th><th>Excluded</th><th>No account</th><th>Logons w/o source</th><th>Duplicates</th><th>Sources</th></tr>${hosts}</table>` : '<span class="stat">None.</span>'}</div>
+  </div>`;
+}
+$("#dqbtn").onclick = showQuality;
 
 document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
   document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x === b)); state.tab = b.dataset.t; renderCenter(); });

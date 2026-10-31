@@ -27,6 +27,7 @@ from .ingest.to_parquet import ingest
 from .lookahead import privmap
 from .lookahead.reach import build_graph as build_reach_graph, look_ahead
 import networkx as nx
+from . import quality
 from .narrate import checker, guard, llm, template
 from .results import store
 from .store.db import connect, set_dataset_vars
@@ -90,7 +91,7 @@ def key_entities(sub: nx.Graph, nodes) -> dict:
     return out
 
 
-def build_incidents(con, log=print, use_llm: bool = True) -> tuple[list[dict], list[dict], dict]:
+def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None) -> tuple[list[dict], list[dict], dict]:
     resolver = IpResolver(con)
     hosts_info = build_hosts(con)
     nodes = load_nodes(con, resolver)
@@ -205,6 +206,7 @@ def build_incidents(con, log=print, use_llm: bool = True) -> tuple[list[dict], l
                              "host_list": hosts_[:50]})
         inc["indicators"] = sorted(inds, key=lambda x: (-x["hosts"], -x["hits"]))[:50]
         inc["key_entities"] = key_entities(g.subgraph(comp), nodes)
+        inc["data_quality"] = quality.for_incident(q or {}, steps, inc["gaps"])
         # narration: template always; LLM if available, checked by code
         story = checker.Story(steps)
         tmpl = template.narrate(inc, steps)
@@ -269,6 +271,17 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
         log(f"  {n_ip} IPs resolved over time")
 
         t = time.time()
+        q = quality.compute(con, rep)
+        quality.write(out, q)
+        stages["data_quality"] = round(time.time() - t, 2)
+        qs = q["summary"]
+        log(f"  data quality {q['quality_score']}/100: {qs['successfully_parsed']:,}/{qs['total_records']:,} parsed, "
+            f"{qs['records_excluded_from_detection']:,} excluded, {qs['duplicate_records']:,} duplicates, "
+            f"{qs['late_arriving_events']:,} late, {qs['unknown_event_types']:,} unknown types")
+        for w in q["warnings"]:
+            log(f"  ! [{w['level']}] {w['text']}")
+
+        t = time.time()
         log("[3/6] hunt")
         rule_stats = run_rules(con, log=log)
         stages["detection"] = round(time.time() - t, 2)
@@ -277,7 +290,7 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
 
         t = time.time()
         log("[4/6] correlate, trace, look-ahead, narrate")
-        incidents, review, counts, reach_g = build_incidents(con, log=log, use_llm=use_llm)
+        incidents, review, counts, reach_g = build_incidents(con, log=log, use_llm=use_llm, q=q)
         graph_info = graph_export.write(out, graph_export.build(incidents + review, reach_g))
         counts["export_graph"] = graph_info
         counts["evidence_indexed"] = store.write_evidence_index(con, out, incidents + review)
@@ -290,7 +303,8 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
              "processed": {"bytes": rep["bytes"], "events": rep["rows"], "seconds": seconds,
                            "peak_memory_gb": round(pm.peak / 2**30, 3), "unparsed": rep["unparsed"],
                            "mb_per_s": round(rep["bytes"] / 2**20 / max(seconds, 1e-6), 2)},
-             "stages_seconds": stages, "counts": counts, "rules": rule_stats, "time_bounds": dvars,
+             "stages_seconds": stages, "counts": counts,
+             "data_quality": {"score": q["quality_score"], **q["summary"], "warnings": q["warnings"]}, "rules": rule_stats, "time_bounds": dvars,
              "files": {k: {"format": v["format"], "rows": v["rows"], "unparsed": v["unparsed"]}
                        for k, v in rep["files"].items()}}
     summary = {"dataset": stats["dataset"], "processed": stats["processed"]}

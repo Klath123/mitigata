@@ -115,7 +115,7 @@ def build_steps(nodes: list[Node]) -> list[dict]:
             "order": i, "ts": s["ts"], "time": iso(s["ts"]), "host": s["host"], "user": _step_user(rows),
             "technique": s["technique"], "sub_technique": sub,
             "technique_name": stix.name(sub) or stix.name(s["technique"]), "stage": stage,
-            "label_source": {"sigma": "sigma", "vendor": "vendor"}.get(best.kind, "rule"),
+            "label_source": {"sigma": "sigma", "vendor": "vendor", "behavioural": "behavioural"}.get(best.kind, "rule"),
             "rule": ", ".join(sorted({n.rule_id for n in s["_nodes"]})),
             "summary": _summary(best, rows), "evidence": ev[:500],
             "_rows": rows, "_nodes": [n.key for n in s["_nodes"]], "_src_ip": src_ip,

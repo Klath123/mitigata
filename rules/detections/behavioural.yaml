@@ -1,0 +1,19 @@
+# Behavioural candidates on records with an UNKNOWN event type (see rules/sequences/behavioural.yaml).
+rules:
+  - id: behav_account_spread
+    title: One account active on many hosts within an hour, unrecognised log format (candidate)
+    technique: T1021
+    tactic: Lateral Movement
+    severity: 0.3
+    kind: behavioural
+    sql: |
+      WITH u AS (
+        SELECT e.*, e.ts // 3600000 AS hr FROM events e
+        WHERE e.type_source = 'unknown' AND e."user" IS NOT NULL AND NOT sys_acct(e."user") AND e.host IS NOT NULL),
+      spread AS (
+        SELECT "user", hr FROM u GROUP BY "user", hr HAVING count(DISTINCT host) >= 10),
+      firsts AS (
+        SELECT u.*, row_number() OVER (PARTITION BY u."user", u.hr, u.host ORDER BY u.ts) AS rn
+        FROM u JOIN spread USING ("user", hr))
+      SELECT f.* EXCLUDE (hr, rn), f."user" || '|' || CAST(f.hr AS VARCHAR) AS hit_key
+      FROM firsts f WHERE rn = 1

@@ -197,9 +197,39 @@ class Mapper:
         self.patterns = []
         for p in cfg.get("message_patterns") or []:
             self.patterns.append((p.get("program"), re.compile(p["regex"]), p.get("event_type"), p.get("action")))
+        self.semantics = self._compile_semantics(cfg.get("event_semantics") or [])
+        self.suggested = []                       # unapproved suggestions (suggested.yaml), never confirmed types
+        sp = os.path.join(os.path.dirname(path), "suggested.yaml")
+        if os.path.exists(sp):
+            with open(sp, encoding="utf-8") as f:
+                sug = yaml.safe_load(f) or {}
+            self.suggested = self._compile_semantics(sug.get("event_semantics") or [])
         self._plan: dict[tuple, tuple] = {}
         self._ov_plan: dict[tuple, dict] = {}
         self.domains: set[str] = set()
+
+    @staticmethod
+    def _compile_semantics(items: list) -> list:
+        out = []
+        for it in items:
+            conds = []
+            for c in it.get("all") or []:
+                neg = "not_fields" in c
+                fields = [f.lower() for f in (c.get("not_fields") if neg else c.get("fields")) or []]
+                conds.append((fields, re.compile(c["matches"], re.I), neg))
+            if conds:
+                out.append({"name": it.get("name", it.get("event_type")), "event_type": it["event_type"],
+                            "action": it.get("action"), "confidence": float(it.get("confidence", 1.0)),
+                            "conds": conds})
+        return out
+
+    @staticmethod
+    def _sem_match(rule: dict, view: dict[str, str]) -> bool:
+        for fields, rx, neg in rule["conds"]:
+            hit = any(rx.search(view[f]) for f in fields if f in view)
+            if hit == neg:
+                return False
+        return True
 
     def _add(self, canon: str, alias: str, prio: int) -> None:
         a = alias.lower()
@@ -253,6 +283,7 @@ class Mapper:
 
     # -------------------------------------------------------------- message semantics
     def apply_patterns(self, rec: dict, program: str | None, msg: str) -> None:
+        """Message patterns (fields.yaml): regex with named groups on free text; marks type_source=pattern."""
         prog = (program or "").lower()
         for want_prog, rx, et, action in self.patterns:
             if want_prog and want_prog not in prog:
@@ -264,12 +295,14 @@ class Mapper:
                         rec[k] = v
                 if et:
                     rec["event_type"] = et
+                    rec["_type_source"] = "pattern"
                 if action:
                     rec["action"] = action
                 return
 
     # -------------------------------------------------------------- main
     def map(self, rec: dict, tp: TimeParser, file_host: str | None = None, fmt: str = "") -> tuple[dict, list[str]]:
+        src_hint = rec.pop("_type_source", None)
         keys = tuple(rec)
         plan, unmapped = self.plan(keys)
         raw: dict[str, object] = {}
@@ -285,12 +318,14 @@ class Mapper:
 
         # ---- event type
         et = raw.pop("event_type", None)
+        type_source = (src_hint or "native") if et else None
         eid = raw.pop("event_id", None)
         chan = str(raw.pop("channel", "") or "")
         prov = str(raw.pop("provider", "") or "")
         act = raw.pop("action_type", None)
         if not et and eid is None and act is not None:
             et = self.action_types.get(str(act).strip().lower().replace(" ", "_"))
+            type_source = "native" if et else None
         if not et:
             eidn = norm_int(eid) if eid is not None else None
             if eidn is not None:
@@ -301,6 +336,7 @@ class Mapper:
                         pref = pfx
                         break
                 et = f"{pref}:{eidn}"
+                type_source = "native"
         if et and et in self.overrides:
             for canon, ks in self._override_plan(keys, et).items():
                 if not self.overrides[et][canon]:
@@ -370,10 +406,36 @@ class Mapper:
                 continue
             else:
                 row[f] = v if isinstance(v, str) else (json.dumps(v) if isinstance(v, (dict, list)) else str(v))
+        # semantics: unknown format, recognisable meaning (only when nothing better typed the record)
+        if (not et or et == "generic" or et.startswith("syslog:")) and (self.semantics or self.suggested):
+            view = {}
+            for k, v in rec.items():
+                if v is not None and not isinstance(v, (dict, list)):
+                    view.setdefault(k.lower().rsplit(".", 1)[-1], str(v))
+            for k in ("process", "cmdline", "target", "message", "user", "action", "status"):
+                if row.get(k) is not None:
+                    view.setdefault(k, str(row[k]))
+            for rule in self.semantics:
+                if self._sem_match(rule, view):
+                    et, type_source = rule["event_type"], f"semantic:{rule['name']}"
+                    if rule["action"] and not row.get("action"):
+                        row["action"] = rule["action"]
+                    break
+            else:
+                for rule in self.suggested:
+                    if self._sem_match(rule, view):
+                        row["suggested_event_type"] = rule["event_type"]
+                        row["mapping_confidence"] = rule["confidence"]
+                        break
         if not et:
+            type_source = "inferred"
             if row.get("src_ip") and row.get("dst_ip") and (row.get("dst_port") is not None or row.get("bytes_out")):
                 et = "net:flow"
+            elif row.get("host_ip") and row.get("host") and not row.get("user") and not row.get("process"):
+                et = "net:lease"            # host <-> IP assignment (DHCP lease, inventory, agent heartbeat)
             else:
                 et = fmt or "generic"
+                type_source = "unknown"
         row["event_type"] = et
+        row["type_source"] = "unknown" if et == "generic" else type_source
         return row, unmapped
