@@ -15,6 +15,7 @@ import yaml
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RULES_DIR = os.path.join(ROOT, "rules")
 NOISY_MIN, NOISY_PER_HOST_DAY = 30, 0.5
+PREVALENT_SHARE, PREVALENT_MIN = 0.2, 50   # a rule on >= 20% of all hosts/endpoints (and >= 50) is the environment
 SIGMA_REPORT: dict = {}                    # filled by load_rules: Sigma rules loaded / refused and why
 SEVERITY = {"info": 0.1, "informational": 0.1, "low": 0.25, "medium": 0.5, "high": 0.75, "critical": 1.0}
 
@@ -343,6 +344,19 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
         hosts, days = con.execute("SELECT count(DISTINCT host), greatest(1, (max(ts) - min(ts)) / 86400000.0) "
                                   "FROM hits WHERE ts IS NOT NULL").fetchone()
     noisy_at = max(NOISY_MIN, NOISY_PER_HOST_DAY * (hosts or 1) * (days or 1))
+    # prevalence: a rule that fires on a large share of all entities describes the environment, not an attack
+    # (hits of network events belong to the internal endpoint, as in graph/build.py)
+    ent = ("CASE WHEN event_type IN ('net:flow', 'fw:flow', 'zeek:conn', 'fw:ips', 'fw:av', 'fw:web', 'fw:app', "
+           "'dns:query') AND is_internal(src_ip) THEN src_ip ELSE host END")
+    try:
+        n_ent = con.execute(f"SELECT count(DISTINCT {ent}) FROM events").fetchone()[0] or 0
+        common = [rid for (rid,) in con.execute(f"""SELECT rule_id FROM hits GROUP BY 1
+                  HAVING count(DISTINCT {ent}) >= greatest({PREVALENT_MIN}, {PREVALENT_SHARE} * {n_ent})""").fetchall()]
+    except duckdb.Error:                 # no events table / macros (unit use)
+        common = []
+    for rid in common:
+        if rid in stats:
+            stats[rid]["prevalent"] = f"fires on >= {PREVALENT_SHARE:.0%} of {n_ent} hosts/endpoints"
     # baseline: a rule that already fired for the same host + process during the warm-up is describing normal
     # activity of this environment, so its hits there are noisy too (the SOC tuning step, done from the data)
     con.execute("""
@@ -356,7 +370,7 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
     SELECT d.* EXCLUDE (sig__), 1.0 / (1 + log10(1 + count(DISTINCT d.hit_key) OVER (
                  PARTITION BY d.rule_id, d.sig__))) AS rarity,
            count(DISTINCT d.hit_key) OVER (PARTITION BY d.rule_id) > """ + str(noisy_at) + """
-             OR b.rule_id IS NOT NULL  OR d.rule_id IN (""" + (", ".join(_lit(k) for k in aggregated) or "''") + """) AS noisy
+             OR b.rule_id IS NOT NULL  OR d.rule_id IN (""" + (", ".join(_lit(k) for k in set(aggregated) | set(common)) or "''") + """) AS noisy
     FROM d LEFT JOIN base b ON b.rule_id = d.rule_id AND b.host IS NOT DISTINCT FROM d.host AND b.sig__ = d.sig__
     """)
     for rid, n_keys in aggregated.items():            # rarity reflects how noisy the rule really was, not the grouping

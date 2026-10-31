@@ -38,8 +38,10 @@ rules:
       firsts AS (SELECT "user", ctry__, min(ts) AS f__ FROM a GROUP BY 1, 2)
       SELECT a.* EXCLUDE (role__, ctry__),
         a."user" || '|admin|' || a.src_ip AS hit_key,
+        -- a device's admin interface reached from the internet is high-risk on its own; a new country for the
+        -- account is the strongest version of it
         CASE WHEN a.ts = firsts.f__ AND (a.ts > getvariable('warmup_end') OR getvariable('warmup_end') > getvariable('ds_end'))
-             THEN 0.6 ELSE 0.45 END AS hit_severity
+             THEN 0.75 ELSE 0.5 END AS hit_severity
       FROM a JOIN firsts USING ("user", ctry__)
 
   - id: fw_account_geo_jump
