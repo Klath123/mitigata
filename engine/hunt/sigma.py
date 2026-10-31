@@ -1,13 +1,14 @@
 """Minimal Sigma -> DuckDB SQL converter (no pySigma dependency).
 
 Supports: logsource product/category/service mapping, selections as maps or lists of maps,
-field modifiers contains/startswith/endswith/all/re/cidr(prefix)/windash, null values, keyword lists,
+field modifiers contains/startswith/endswith/all/re/cidr/windash, null values, keyword lists,
 and conditions with and/or/not, parentheses, '1 of x*', 'all of x*', '1 of them', 'all of them'.
 Unknown fields fall back to a regex over the `extra` JSON column.
 """
 from __future__ import annotations
 
 import glob
+import ipaddress
 import os
 import re
 
@@ -97,6 +98,29 @@ def _field_expr(field: str) -> tuple[str, bool]:
             False)
 
 
+def _cidr(c: str, v: str) -> str:
+    """Real network membership. IPv4: numeric range on the four octets. IPv6: first-hextet range for /<=16,
+    else exact match on the leading hextets (logs write IPv6 compressed, so string prefixes are unsafe)."""
+    try:
+        net = ipaddress.ip_network(v.strip(), strict=False)
+    except ValueError:
+        return "FALSE"
+    lo, hi = int(net.network_address), int(net.broadcast_address)
+    if net.version == 4:
+        n = ("(" + " + ".join(f"TRY_CAST(split_part({c}, '.', {i + 1}) AS BIGINT) * {256 ** (3 - i)}"
+                              for i in range(4)) + ")")
+        return f"(regexp_matches(coalesce({c}, ''), '^\\d+\\.\\d+\\.\\d+\\.\\d+$') AND {n} BETWEEN {lo} AND {hi})"
+    if net.prefixlen <= 16:
+        h = f"TRY_CAST(('0x' || nullif(split_part(lower({c}), ':', 1), '')) AS BIGINT)"
+        return f"(position(':' IN coalesce({c}, '')) > 0 AND {h} BETWEEN {lo >> 112} AND {hi >> 112})"
+    if net.prefixlen == 128:
+        return f"(lower({c}) = {_q(str(net.network_address))})"
+    k = net.prefixlen // 16                               # whole hextets only; partial ones widen the match
+    head = ":".join(net.network_address.exploded.split(":")[:k])
+    hx = "regexp_replace(" + f"lower({c})" + ", '(^|:)0+([0-9a-f])', '\\1\\2', 'g')"
+    return f"({hx} LIKE {_q(_like_escape(':'.join(p.lstrip('0') or '0' for p in head.split(':'))) + ':%')} ESCAPE '\\')"
+
+
 def _value_cond(col: str, numeric: bool, val, mods: list[str]) -> str:
     if val is None:
         return f"({col} IS NULL OR CAST({col} AS VARCHAR) = '')"
@@ -110,8 +134,7 @@ def _value_cond(col: str, numeric: bool, val, mods: list[str]) -> str:
         flags = "(?i)" if "i" in mods else ""
         return f"regexp_matches(CAST({col} AS VARCHAR), {_q(flags + v)})"
     if "cidr" in mods:
-        prefix = v.split("/")[0].rsplit(".", 1)[0] if "/" in v else v
-        return f"CAST({col} AS VARCHAR) LIKE {_q(_like_escape(prefix) + '%')} ESCAPE '\\'"
+        return _cidr(f"CAST({col} AS VARCHAR)", v)
     vals = [v]
     if "windash" in mods:
         vals = [v, v.replace("-", "/", 1)] if v.startswith("-") else [v, v.replace("/", "-", 1)]
