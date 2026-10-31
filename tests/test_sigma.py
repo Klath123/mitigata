@@ -21,6 +21,20 @@ def test_cidr_ipv4_is_real_network_membership():
     assert not _match(None, "10.0.0.0/8")
 
 
+def test_windows_rules_never_see_linux_processes():
+    from engine.hunt.sigma import logsource_filter
+    con = duckdb.connect()
+    con.execute("CREATE TABLE ev (event_type VARCHAR, process VARCHAR)")
+    con.executemany("INSERT INTO ev VALUES (?, ?)", [("sysmon:1", r"C:\Windows\x.exe"), ("audit:execve", "/usr/bin/id"),
+                                                     ("sysmon:1", "/usr/bin/curl"), ("win:4688", r"C:\a.exe")])
+
+    def seen(prod):
+        f = logsource_filter({"logsource": {"product": prod, "category": "process_creation"}})
+        return {p for (p,) in con.execute(f"SELECT process FROM ev e WHERE {f}").fetchall()}
+    assert seen("windows") == {r"C:\Windows\x.exe", r"C:\a.exe"}
+    assert seen("linux") == {"/usr/bin/id", "/usr/bin/curl"}
+
+
 def test_cidr_ipv6():
     assert _match("fe80::1", "fe80::/10")
     assert _match("febf::1", "fe80::/10")

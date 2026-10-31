@@ -25,3 +25,5 @@ id_rsa*
 id_ed25519*
 # big downloads
 rules/attack/enterprise-attack.json
+# community Sigma rules: fetched by python -m engine.hunt.fetch_sigma
+rules/sigma/sigmahq/

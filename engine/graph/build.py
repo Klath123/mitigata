@@ -22,6 +22,7 @@ SYSTEM_LOGON_IDS = {"0x3e7", "0x3e4", "0x3e5", "0x0"}
 LOGON_TYPES = {"win:4624", "auth:success", "win:5140", "win:5145"}
 MAX_FANOUT = 60
 HOP_LOOKBACK = 24 * 3_600_000
+SIGMA_STEP_MIN = 0.6                      # Sigma 'high' and above can be incident steps
 REMOTE_REQUEST = {"win:4769", "win:4768", "win:4776"}   # logged on the DC, naming the requesting host
 # links that only say "near in time / same account / same host"; strong ones (GUID, session, logon hop) always count
 WEAK_LINKS = {"same_account", "same_account_weak", "time_proximity", "compromised_host", "same_external_ip",
@@ -101,7 +102,9 @@ class Node:
 
 
 def load_nodes(con: duckdb.DuckDBPyConnection, resolver: IpResolver) -> dict[str, Node]:
-    cur = con.execute("SELECT * FROM hits ORDER BY ts")
+    # low/medium Sigma hits stay in `hits` (labels, blind scoring, the evidence index) but do not become
+    # incident steps: on real data they fire on routine activity and flood the review queue
+    cur = con.execute(f"SELECT * FROM hits WHERE NOT (kind = 'sigma' AND severity < {SIGMA_STEP_MIN}) ORDER BY ts")
     cols = [d[0] for d in cur.description]
     nodes: dict[str, Node] = {}
     for row in cur.fetchall():

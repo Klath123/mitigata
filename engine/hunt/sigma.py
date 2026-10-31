@@ -35,7 +35,7 @@ FIELD_MAP = {
     "parentcommandline": "parent_cmdline", "originalfilename": "original_file_name", "hashes": "hashes",
     "hash": "hashes", "integritylevel": "integrity_level", "imageloaded": "image_loaded",
     "signed": "signed", "signaturestatus": "signed", "ticketencryptiontype": "ticket_encryption",
-    "pipename": "target",
+    "pipename": "target", "relativetargetname": "target", "payload": "message", "contextinfo": "message",
 }
 NUMERIC = {"logon_type", "dst_port", "src_port"}
 
@@ -209,26 +209,95 @@ def _condition(cond: str, sels: dict[str, str]) -> str:
     return " ".join(out)
 
 
-def sigma_to_rule(doc: dict, source: str = "") -> dict | None:
+SUPPORTED_MODS = {"contains", "startswith", "endswith", "all", "re", "i", "cidr", "windash"}
+PRODUCTS = {"windows": "(e.event_type LIKE 'win:%' OR e.event_type LIKE 'sysmon:%' OR e.event_type LIKE 'ps:%')",
+            "linux": "(e.event_type LIKE 'audit:%' OR e.event_type LIKE 'auth:%' OR e.event_type LIKE 'syslog:%')"}
+# Sigma levels are tuned for alert queues, not for evidence chains: low/medium become weak signals
+SIGMA_SEVERITY = {"informational": 0.05, "low": 0.15, "medium": 0.3, "high": 0.6, "critical": 0.8}
+
+
+def _fields_and_mods(det: dict) -> tuple[set[str], set[str]]:
+    fields, mods = set(), set()
+
+    def walk(v):
+        if isinstance(v, dict):
+            for k, x in v.items():
+                f, *m = str(k).split("|")
+                if f:
+                    fields.add(f.lower())
+                mods.update(m)
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+    for k, v in det.items():
+        if k not in ("condition", "timeframe"):
+            walk(v)
+    return fields, mods
+
+
+def refusal(doc: dict) -> str | None:
+    """Why this Sigma rule can't run faithfully on our schema (None = it can). Refused rules are reported,
+    never silently turned into slow or wrong SQL."""
     det = doc.get("detection") or {}
     cond = det.get("condition")
+    if doc.get("status") in ("deprecated", "unsupported"):
+        return f"status {doc.get('status')}"
     if not cond:
+        return "no condition"
+    if "|" in str(cond) or doc.get("correlation"):
+        return "aggregation/correlation (write it in the sequence DSL)"
+    ls = doc.get("logsource") or {}
+    prod, cat, svc = ls.get("product"), ls.get("category"), ls.get("service")
+    if prod not in (None, *PRODUCTS):
+        return f"product {prod} not ingested"
+    if cat and cat not in CATEGORY:
+        return f"category {cat} not mapped"
+    if not cat and svc and svc not in SERVICE:
+        return f"service {svc} not mapped"
+    if not (cat or svc or prod):
+        return "no logsource"
+    fields, mods = _fields_and_mods(det)
+    bad = sorted(mods - SUPPORTED_MODS)
+    if bad:
+        return f"modifier {bad[0]} not supported"
+    unmapped = sorted(f for f in fields if f not in FIELD_MAP and f != "eventid")
+    if unmapped:
+        return f"field {unmapped[0]} not mapped"
+    return None
+
+
+_UNIX_PATH = "starts_with(coalesce(e.process, ''), '/')"
+# a category (process_creation...) spans OSes; the rule's product must still hold, or a Windows rule such as
+# "Image does not contain a backslash" fires on every Linux process. Sysmon for Linux shares the sysmon:* ids,
+# so the OS of a Sysmon event comes from its process path.
+OS_GUARD = {"windows": f"(e.event_type NOT LIKE 'audit:%' AND NOT {_UNIX_PATH})",
+            "linux": f"(e.event_type NOT LIKE 'win:%' AND e.event_type NOT LIKE 'ps:%' "
+                     f"AND (e.event_type NOT LIKE 'sysmon:%' OR {_UNIX_PATH}))"}
+
+
+def logsource_filter(doc: dict) -> str:
+    ls = doc.get("logsource") or {}
+    prod = ls.get("product")
+    if ls.get("category") in CATEGORY:
+        f = CATEGORY[ls["category"]]
+    elif ls.get("service") in SERVICE:
+        f = SERVICE[ls["service"]]
+    else:
+        return PRODUCTS.get(prod, "TRUE")
+    return f"({f}) AND {OS_GUARD[prod]}" if prod in OS_GUARD else f
+
+
+def sigma_to_rule(doc: dict, source: str = "") -> dict | None:
+    if refusal(doc):
         return None
+    det = doc.get("detection") or {}
+    cond = det.get("condition")
     if isinstance(cond, list):
         cond = " or ".join(f"({c})" for c in cond)
-    if "|" in str(cond):                                   # aggregations (count() by) not supported
-        return None
     sels = {k: _selection(v) for k, v in det.items() if k not in ("condition", "timeframe")}
     where = [f"({_condition(cond, sels)})"]
-    ls = doc.get("logsource") or {}
-    if ls.get("category") in CATEGORY:
-        where.append(CATEGORY[ls["category"]])
-    elif ls.get("service") in SERVICE:
-        where.append(SERVICE[ls["service"]])
-    elif ls.get("product") == "linux":
-        where.append("(e.event_type LIKE 'audit:%' OR e.event_type LIKE 'auth:%' OR e.event_type LIKE 'syslog:%')")
-    elif ls.get("product") == "windows":
-        where.append("(e.event_type LIKE 'win:%' OR e.event_type LIKE 'sysmon:%' OR e.event_type LIKE 'ps:%')")
+    group = logsource_filter(doc)
     tags = [t.lower() for t in doc.get("tags") or []]
     techs = [t.split(".", 1)[1].upper() for t in tags if re.fullmatch(r"attack\.t\d{4}(\.\d{3})?", t)]
     tactic = next((t.split(".", 1)[1].replace("_", " ").replace("-", " ").title() for t in tags
@@ -239,21 +308,42 @@ def sigma_to_rule(doc: dict, source: str = "") -> dict | None:
     tech = (sub.split(".")[0] if sub else next(iter(techs), None))
     rid = "sigma_" + re.sub(r"\W+", "_", str(doc.get("id") or doc.get("title", "rule")))[:60]
     return {"id": rid, "title": doc.get("title", rid), "technique": tech, "sub_technique": sub,
-            "tactic": tactic, "severity": LEVEL.get(str(doc.get("level", "medium")).lower(), 0.5),
-            "kind": "sigma", "source": source,
-            "sql": "SELECT e.* FROM events e WHERE " + " AND ".join(where)}
+            "tactic": tactic, "severity": SIGMA_SEVERITY.get(str(doc.get("level", "medium")).lower(), 0.3),
+            "kind": "sigma", "source": source, "level": doc.get("level"),
+            # run_rules filters the log source once per group and runs `match` against that subset
+            "group": group, "match": where[0],
+            "sql": "SELECT e.* FROM events e WHERE " + " AND ".join(where + [group])}
 
 
-def load_sigma_dir(path: str) -> list[dict]:
-    out = []
+def load_sigma_dir(path: str, report: dict | None = None,
+                   statuses=("stable", "test", "experimental")) -> list[dict]:
+    """Every rule file under path; `report` collects {loaded, refused: {reason: n}, errors}."""
+    out, refused, detail, errors = [], {}, {}, 0
     for p in sorted(glob.glob(os.path.join(path, "**", "*.y*ml"), recursive=True)):
         try:
             with open(p, encoding="utf-8") as f:
-                for doc in yaml.safe_load_all(f):
-                    if isinstance(doc, dict) and doc.get("status") != "deprecated":
-                        r = sigma_to_rule(doc, os.path.relpath(p, os.path.dirname(path)))
-                        if r:
-                            out.append(r)
+                docs = list(yaml.safe_load_all(f))
         except Exception:
+            errors += 1
             continue
+        for doc in docs:
+            if not isinstance(doc, dict) or "detection" not in doc:
+                continue
+            why = refusal(doc) or (None if doc.get("status", "experimental") in statuses
+                                   else f"status {doc.get('status')}")
+            if why:
+                key = re.sub(r" \S+ not", " * not", why) if " not " in why else why
+                refused[key] = refused.get(key, 0) + 1
+                detail[why] = detail.get(why, 0) + 1
+                continue
+            try:
+                r = sigma_to_rule(doc, os.path.relpath(p, os.path.dirname(path)))
+            except Exception:
+                errors += 1
+                continue
+            if r:
+                out.append(r)
+    if report is not None:
+        report.update({"loaded": len(out), "refused": dict(sorted(refused.items(), key=lambda x: -x[1])),
+                       "top_refusals": dict(sorted(detail.items(), key=lambda x: -x[1])[:25]), "errors": errors})
     return out
