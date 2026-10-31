@@ -80,8 +80,10 @@ def narrate(inc: dict, steps: list[dict]) -> list[dict] | None:
                        "Write the incident report sentences."}],
         )
         if resp.stop_reason in ("refusal", "max_tokens"):
+            print(f"  narrator: incident {inc['incident_id']} stopped ({resp.stop_reason}), template kept")
             return None
         text = next(b.text for b in resp.content if b.type == "text")
         return json.loads(text)["sentences"]
-    except Exception:
+    except Exception as ex:                 # no key, network, bad JSON: the template report stands, but say why
+        print(f"  narrator: incident {inc['incident_id']}: {type(ex).__name__}: {str(ex)[:200]}, template kept")
         return None
