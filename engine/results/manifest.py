@@ -57,7 +57,7 @@ def engine_version() -> dict:
     commit = git("rev-parse", "HEAD")
     dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
     libs = {}
-    for name in ("duckdb", "pyarrow", "networkx", "drain3", "orjson", "python-evtx", "anthropic"):
+    for name in ("duckdb", "pyarrow", "networkx", "drain3", "orjson", "python-evtx", "google-genai"):
         try:
             libs[name] = metadata.version(name)
         except metadata.PackageNotFoundError:

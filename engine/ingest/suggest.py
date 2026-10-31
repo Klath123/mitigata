@@ -5,7 +5,7 @@
 1. Sample records whose event type is unknown, plus their unmapped fields, values and templates.
 2. Propose field aliases and event-semantic rules:
    - heuristics (always, offline): value types + field-name hints
-   - Claude (optional): sees ONLY that sample as a JSON data block, returns JSON proposals
+   - Gemini (optional): sees ONLY that sample as a JSON data block, returns JSON proposals
 3. Validate every proposal in code: target field exists, regexes compile, semantic rules need a context AND
    an outcome condition, and a dry run on the sample measures how many records each one improves.
 4. Write rules/mappings/suggested.yaml (status: pending). Nothing changes until a person copies an entry
@@ -156,28 +156,14 @@ LLM_SYSTEM = (
 
 
 def llm(s: dict) -> dict | None:
-    try:
-        import anthropic
-    except ImportError:
-        return None
-    try:
-        client = anthropic.Anthropic()
-        resp = client.beta.messages.create(
-            model=os.environ.get("ATTACKSTORY_LLM_MODEL", "claude-opus-5-5"), max_tokens=16000, system=LLM_SYSTEM,
-            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
-            output_config={"effort": "medium", "format": {"type": "json_schema", "schema": LLM_SCHEMA}},
-            messages=[{"role": "user", "content": "<sample_data>\n" +
-                       json.dumps({k: v for k, v in s.items() if k != "records"})[:120_000] +
-                       "\n</sample_data>\nPropose mappings for this sample."}])
-        if resp.stop_reason in ("refusal", "max_tokens"):
-            return None
-        out = json.loads(next(b.text for b in resp.content if b.type == "text"))
-        for k in ("field_aliases", "event_semantics"):
-            for x in out.get(k, []):
-                x["source"] = "llm"
-        return out
-    except Exception:
-        return None
+    from ..narrate.llm import generate_json
+    out = generate_json(LLM_SYSTEM, "<sample_data>\n" + json.dumps({k: v for k, v in s.items() if k != "records"})
+                        [:120_000] + "\n</sample_data>\nPropose mappings for this sample.", LLM_SCHEMA,
+                        "mapping suggestions")
+    for k in ("field_aliases", "event_semantics"):
+        for x in (out or {}).get(k, []):
+            x["source"] = "llm"
+    return out
 
 
 # ====================================================================== validation

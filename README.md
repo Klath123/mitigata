@@ -19,7 +19,7 @@ pip install -r requirements.txt
 python -m generator.gen --out data/s1 --size 100MB --seed 1 --days 3
 python -m generator.gen --out data/clean --size 100MB --seed 7 --days 3 --clean   # no attacks: false-positive check
 
-# 2. run the engine (add --no-llm to skip the optional Claude narrator)
+# 2. run the engine (add --no-llm to skip the optional Gemini narrator)
 python -m engine.run data/s1 --out results/s1 --no-llm
 
 # 3. score it against ground truth
@@ -65,7 +65,7 @@ raw logs → [1] ingest → Parquet → [2] DuckDB + entities → data quality �
 | Hunt | `engine/hunt/`, `rules/` | YAML/SQL rules, sequence DSL, rarity rules, vendor alerts, Sigma → DuckDB SQL → `hits` table |
 | Correlate | `engine/graph/`, `engine/cluster/` | hits linked by GUIDs, sessions, logon hops, IOCs (noisy-OR confidence); clusters scored; steps, hops, path, gaps, tracer context |
 | Look-ahead | `engine/lookahead/reach.py` | reachability on the privilege graph |
-| Narrate | `engine/narrate/` | template report always; optional Claude report; `checker.py` verifies every claim against cited evidence; `guard.py` flags prompt injection in logs |
+| Narrate | `engine/narrate/` | template report always; optional Gemini report; `checker.py` verifies every claim against cited evidence; `guard.py` flags prompt injection in logs |
 | Results / API | `engine/results/`, `engine/api/app.py`, `ui/index.html` | precomputed JSON + run manifest; FastAPI serves it read-only |
 | Eval | `generator/`, `eval/score.py` | synthetic company + planted scenarios (prd, A, B, C) with ground truth; PRD metrics |
 
@@ -106,7 +106,7 @@ SigmaHQ rules: `python -m engine.hunt.fetch_sigma` (git-ignored, DRL 1.1). Bench
 
 - **MITRE ATT&CK names/tactics:** download `enterprise-attack.json` from https://github.com/mitre/cti
   (`enterprise-attack/enterprise-attack.json`) to `rules/attack/enterprise-attack.json` (git-ignored); otherwise a built-in table is used.
-- **LLM narrator / mapping suggestions:** set `ANTHROPIC_API_KEY` (model via `ATTACKSTORY_LLM_MODEL`); `ATTACKSTORY_LLM=0` disables it.
+- **LLM narrator / mapping suggestions:** set `GEMINI_API_KEY` (model via `ATTACKSTORY_LLM_MODEL`, default `gemini-4-argon`; thinking via `ATTACKSTORY_LLM_THINKING`, default `high`); `ATTACKSTORY_LLM=0` disables it.
 - **Fast EVTX:** `evtx_dump` on `PATH` is used if present; otherwise pure-Python `python-evtx`.
 
 ## Not in git (regenerate or keep local)

@@ -177,8 +177,9 @@ def render_markdown(inc: dict) -> str:
         for f in inc["injection_flags"][:5]:
             lines.append(f"> - `{f['evidence']}` ({f['field']}): \"{f['match']}\"")
     for section, title in (("summary", "Executive summary"), ("timeline", "What happened"),
-                           ("movement", "Movement between hosts"), ("look_ahead", "What the attacker could reach next"),
-                           ("gaps", "Logging gaps")):
+                           ("movement", "Movement between hosts"), ("impact", "Impact"),
+                           ("look_ahead", "What the attacker could reach next"), ("gaps", "Logging gaps"),
+                           ("recommendations", "Analyst recommendations")):
         sents = [s for s in inc.get("report", []) if s.get("section", "timeline") == section]
         if not sents:
             continue

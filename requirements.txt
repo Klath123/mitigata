@@ -9,6 +9,6 @@ fastapi>=0.110
 uvicorn>=0.29
 pydantic>=2.5
 python-evtx>=0.8
-anthropic>=0.40      # optional: LLM narrator (template narrator works without it)
+google-genai>=2.3.0   # optional: Gemini narrator (template narrator works without it)
 pytest>=8
 httpx>=0.27
