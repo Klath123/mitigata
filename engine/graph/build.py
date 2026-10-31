@@ -9,6 +9,8 @@ from __future__ import annotations
 import bisect
 from collections import defaultdict
 from dataclasses import dataclass, field
+from functools import cached_property
+from itertools import chain
 
 import duckdb
 import networkx as nx
@@ -69,23 +71,25 @@ class Node:
     severity: float
     rarity: float
     rows: list[dict] = field(default_factory=list)
+    rows_total: int = 0          # evidence rows in DuckDB; `rows` may hold a sample of a very large hit
 
-    @property
+    # rows are final once load_nodes returns, and these are read many times while linking and scoring
+    @cached_property
     def ts(self) -> int:
         return min(r["ts"] for r in self.rows if r["ts"] is not None) if self.rows else 0
 
-    @property
+    @cached_property
     def ts_end(self) -> int:
         return max(r["ts"] for r in self.rows if r["ts"] is not None) if self.rows else 0
 
     def vals(self, col: str) -> set:
         return {r[col] for r in self.rows if r.get(col) not in (None, "")}
 
-    @property
+    @cached_property
     def hosts(self) -> set:
         return self.vals("host")
 
-    @property
+    @cached_property
     def users(self) -> set:
         return {u for u in self.vals("user") if not is_system_account(u)}
 
@@ -94,16 +98,33 @@ class Node:
         return sorted({f"{r['src_file']}:{r['line']}" for r in self.rows})
 
 
+MAX_NODE_ROWS = 500          # evidence rows per hit held in memory for linking; the rest stay in DuckDB
+NODE_HEAD_ROWS = 50
+
+
 def load_nodes(con: duckdb.DuckDBPyConnection, resolver: IpResolver) -> dict[str, Node]:
-    cur = con.execute("SELECT * FROM hits ORDER BY ts")
+    # keep the first rows, the last row (time span) and the first row of every distinct
+    # host/user/source/destination combination (every linkable value), up to MAX_NODE_ROWS per hit
+    cur = con.execute(f"""
+    WITH h AS (
+      SELECT *, count(*) OVER (PARTITION BY hit_key) AS rows_total__,
+             row_number() OVER (PARTITION BY hit_key ORDER BY ts, src_file, line) AS rn__,
+             row_number() OVER (PARTITION BY hit_key ORDER BY ts DESC, src_file DESC, line DESC) AS rl__,
+             row_number() OVER (PARTITION BY hit_key, host, "user", src_ip, dst_ip ORDER BY ts, src_file, line) AS rc__
+      FROM hits),
+    k AS (SELECT *, row_number() OVER (PARTITION BY hit_key ORDER BY rl__ = 1 DESC, rn__) AS kn__
+          FROM h WHERE rn__ <= {NODE_HEAD_ROWS} OR rl__ = 1 OR rc__ = 1)
+    SELECT * EXCLUDE (rn__, rl__, rc__, kn__) FROM k WHERE kn__ <= {MAX_NODE_ROWS} ORDER BY ts""")
     cols = [d[0] for d in cur.description]
     nodes: dict[str, Node] = {}
-    for row in cur.fetchall():
+    for row in chain.from_iterable(iter(lambda: cur.fetchmany(50_000), [])):   # stream, never all hits twice
         r = dict(zip(cols, row))
+        total = r.pop("rows_total__")
         n = nodes.get(r["hit_key"])
         if n is None:
             n = nodes[r["hit_key"]] = Node(r["hit_key"], r["rule_id"], r["rule_title"], r["kind"], r["technique"],
-                                           r["sub_technique"], r["tactic"], r["severity"] or 0.0, r["rarity"] or 0.0)
+                                           r["sub_technique"], r["tactic"], r["severity"] or 0.0, r["rarity"] or 0.0,
+                                           rows_total=total)
         n.severity = max(n.severity, r["severity"] or 0.0)
         # resolve the source host of logons/flows once
         src_h = r.get("src_host")
@@ -249,7 +270,7 @@ class Linker:
                         idx[("payload", cmd)].append(k)
                 proc = (r.get("process") or "").lower()
                 base = proc.replace("/", "\\").rsplit("\\", 1)[-1]
-                if n.severity >= 0.9 and base and "\windows\\" not in proc and base not in COMMON_BINARIES:
+                if n.severity >= 0.9 and base and "\\windows\\" not in proc and base not in COMMON_BINARIES:
                     idx[("binary", base)].append(k)
                 if n.technique == "T1486" and r.get("target"):
                     ext = r["target"].rsplit(".", 1)[-1].lower() if "." in r["target"] else ""

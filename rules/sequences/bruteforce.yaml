@@ -70,3 +70,20 @@ rules:
       min_distinct: {user: 8}
       gap: 10m
       emit: first
+
+  - id: account_from_multiple_internet_ips
+    title: One account logged on / held a VPN session from several internet IPs within minutes
+    technique: T1078
+    sub_technique: T1078.003
+    tactic: Initial Access
+    severity: high
+    kind: sequence
+    sequence:
+      # a person is in one place at a time: the same account active from two internet IPs inside
+      # 30 minutes is a shared or stolen credential
+      first: "(is_logon_ok(e.event_type) OR e.event_type = 'vpn:session') AND is_external(e.src_ip) AND e.user IS NOT NULL"
+      by: [user]
+      min_count: 2
+      min_distinct: {src_ip: 2}
+      gap: 30m
+      emit: first

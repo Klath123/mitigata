@@ -200,3 +200,23 @@ event_semantics:
     all:
       - {fields: [action, operation, event, event_name, activity, op, msg, message],
          matches: '(user|account)[ _-]?(add|added|creat|created|new)|(add|creat|new)[ _-]?(user|account)'}
+  # firewall / VPN appliance housekeeping (FortiGate type=event and similar): known, not suspicious
+  - name: fw_config_change
+    event_type: "fw:config"
+    all:
+      - {fields: [subtype, type, category], matches: '^(system|config)$'}
+      - {fields: [logdesc, msg, message], matches: '(object|attribute|setting|policy)\s+(attribute\s+)?(configured|changed|added|deleted|modified)'}
+  - name: vpn_session
+    event_type: "vpn:session"
+    all:
+      - {fields: [subtype, type, category], matches: '^vpn$'}
+      - {fields: [action], matches: '^(ssl-login|ssl-logout|tunnel-up|tunnel-down)$'}
+  - name: vpn_tunnel
+    event_type: "vpn:tunnel"
+    all:
+      - {fields: [subtype, type, category], matches: '^vpn$'}
+  - name: device_status
+    event_type: "fw:status"
+    all:
+      - {fields: [subtype], matches: '^(sdwan|ha|dhcp|connector|system|perf-stats|health-check)$'}
+      - {fields: [type], matches: '^event$'}

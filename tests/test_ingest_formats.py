@@ -132,3 +132,16 @@ def test_sniff_single(tmp_path):
     p = tmp_path / "a.log"
     p.write_text('1.2.3.4 - - [06/Oct/2026:10:00:00 +0000] "GET / HTTP/1.1" 200 5 "-" "curl"\n')
     assert sniff(str(p))[0] == "apache"
+
+
+def test_binary_lines_inside_text_file_are_skipped(tmp_path):
+    root = tmp_path / "ds"
+    root.mkdir()
+    fw = (b'date=2026-10-06 time=10:01:02 devname="FGT-01" srcip=10.0.10.5 dstip=8.8.8.8 action="accept"\n'
+          b'date=2026-10-06 time=10:01:03 devname="FGT-01" srcip=10.0.10.6 dstip=1.1.1.1 user="Jos\xe9"\n')
+    junk = b"debian-binary   1758889032  0  0\x00\x01\n\x94D\xb7\xfe\x91\n\x8cy\xbf\x9f\xbd\xae\x00\n"
+    (root / "fw.log").write_bytes(fw + junk + fw)
+    rep = ingest(str(root), str(tmp_path / "out"), workers=1)
+    assert rep["binary_lines"] == 3
+    assert rep["rows"] == 4                      # the Latin-1 line stays
+    assert rep["lines"] == 7

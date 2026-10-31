@@ -25,3 +25,9 @@ id_rsa*
 id_ed25519*
 # big downloads
 rules/attack/enterprise-attack.json
+# frontend (React UI)
+/frontend/node_modules/
+/frontend/dist/
+# logs and screenshots
+*.log
+ss/

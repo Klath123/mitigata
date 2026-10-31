@@ -14,15 +14,13 @@ import os
 
 import duckdb
 
-from .store.db import TS_MIN
+from .store.db import DUP_KEY, TS_MIN
 
 LATE_TOLERANCE_MS = 5 * 60_000
 UNKNOWN_TYPES = ("generic", "jsonl", "json_stream", "csv", "tsv", "kv", "xml_events", "syslog", "cef", "leef")
 USER_EXPECTED = ("win:4624", "win:4625", "win:4688", "win:4672", "sysmon:1", "auth:success", "auth:fail",
                  "auth:sudo", "audit:execve")
 PROC_EXPECTED = ("win:4688", "sysmon:1", "sysmon:3", "sysmon:10", "sysmon:11", "audit:execve")
-DUP_KEY = ("hash(ts, host, event_type, \"user\", process, cmdline, target, src_ip, dst_ip, dst_port, bytes_out, "
-           "logon_id, src_file)")
 DUP_KEY_CROSS = ("hash(ts, host, event_type, \"user\", process, cmdline, target, src_ip, dst_ip, dst_port, bytes_out, "
                  "logon_id)")
 
@@ -83,6 +81,7 @@ def compute(con: duckdb.DuckDBPyConnection, ingest_report: dict) -> dict:
         "total_records": recs,
         "successfully_parsed": recs - malformed,
         "malformed_records": malformed,
+        "binary_lines_skipped": ingest_report.get("binary_lines", 0),
         "missing_critical_fields": {
             "timestamp": t["ts_missing"], "host": t["host_missing"], "event_type": t["type_missing"],
             "user_where_expected": t["user_missing"], "source_of_remote_logon": t["remote_logon_no_source"],

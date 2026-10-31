@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from itertools import chain
 
 
 def write(run_dir: str, summary: dict, incidents: list[dict], review: list[dict], stats: dict) -> None:
@@ -74,9 +75,9 @@ def write_evidence_index(con, run_dir: str, incidents: list[dict], max_ids: int 
             files = json.load(f)
     handles = {}
     out = {}
-    for row in cur.fetchall():
+    for row in chain.from_iterable(iter(lambda: cur.fetchmany(50_000), [])):
         r = dict(zip(cols, row))
-        eid = f"{r['src_file']}:{r['line']}"
+        eid =f"{r['src_file']}:{r['line']}"
         raw = r.pop("raw")
         off = r.pop("offset")
         if raw is None and off is not None and off >= 0 and r["src_file"] in files:

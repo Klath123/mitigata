@@ -131,6 +131,7 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
     rules = rules if rules is not None else load_rules()
     con.execute(HITS_DDL)
     stats = {}
+    noisy: dict[str, int] = {}
     for r in rules:
         t0 = time.time()
         try:
@@ -165,6 +166,12 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
             con.execute(sql)
             n = con.execute("SELECT count(*) FROM hits").fetchone()[0] - n0
             stats[r["id"]] = {"hits": n, "seconds": round(time.time() - t0, 2)}
+            agg = _aggregate_noisy(con, r["id"])
+            if agg:
+                stats[r["id"]]["aggregated"] = agg
+                noisy[r["id"]] = agg["from"]
+                log(f"  rule {r['id']}: {agg['from']:,} separate hits is noise at this volume, "
+                    f"grouped by {agg['by']} into {agg['to']:,} (severity halved)")
         except Exception as ex:
             stats[r["id"]] = {"error": str(ex).splitlines()[0][:300]}
             log(f"  rule {r['id']}: ERROR {stats[r['id']]['error']}")
@@ -176,7 +183,28 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
                  PARTITION BY rule_id, coalesce(lower(regexp_extract(process, '[^\\\\/]+$')), event_type)))) AS rarity
     FROM d
     """)
+    for rid, n_keys in noisy.items():            # rarity reflects how noisy the rule really was, not the grouping
+        con.execute("UPDATE hits SET rarity = ? WHERE rule_id = ?", [1.0 / (1 + math.log10(1 + n_keys)), rid])
     return stats
+
+
+MAX_HIT_KEYS = 2000          # more separate hits than this from one rule is noise, not a list to correlate
+_DAY = "CAST(ts // 86400000 AS VARCHAR)"
+_GROUPINGS = [("host+source+day", f"coalesce(host, '') || '|' || coalesce(src_ip, '') || '|' || {_DAY}"),
+              ("host+day", f"coalesce(host, '') || '|' || {_DAY}")]
+
+
+def _aggregate_noisy(con: duckdb.DuckDBPyConnection, rule_id: str) -> dict | None:
+    """Group a flooding rule's hits per host/source/day (coarser if still too many). Every evidence row is kept."""
+    n_keys = con.execute("SELECT count(DISTINCT hit_key) FROM hits WHERE rule_id = ?", [rule_id]).fetchone()[0]
+    if n_keys <= MAX_HIT_KEYS:
+        return None
+    for i, (name, expr) in enumerate(_GROUPINGS):
+        n_new = con.execute(f"SELECT count(DISTINCT {expr}) FROM hits WHERE rule_id = ?", [rule_id]).fetchone()[0]
+        if n_new <= MAX_HIT_KEYS or i == len(_GROUPINGS) - 1:
+            con.execute(f"UPDATE hits SET hit_key = rule_id || '#agg|' || {expr}, severity = severity * 0.5 "
+                        "WHERE rule_id = ?", [rule_id])
+            return {"from": n_keys, "to": n_new, "by": name}
 
 
 __all__ = ["load_rules", "run_rules", "load_macros", "compile_sequence", "SEVERITY", "math"]

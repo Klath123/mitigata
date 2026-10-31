@@ -114,7 +114,23 @@ def _init(fields_path: str) -> None:
     _MAPPER = Mapper(fields_path)
 
 
-def _iter_lines(path: str, start: int, end: int, base_line: int):
+_CTRL = re.compile(rb"[\x00-\x08\x0e-\x1f\x7f]")
+_HIGH = re.compile(rb"[\x80-\xff]")
+
+
+def is_binary(raw: bytes) -> bool:
+    """Binary junk inside a text file (embedded archives, packages): control bytes, or invalid UTF-8
+    that is mostly non-ASCII. A log line with a few Latin-1 characters is still text."""
+    if _CTRL.search(raw):
+        return True
+    try:
+        raw.decode("utf-8")
+        return False
+    except UnicodeDecodeError:
+        return len(_HIGH.findall(raw)) > 0.3 * len(raw.rstrip(b"\r\n"))
+
+
+def _iter_lines(path: str, start: int, end: int, base_line: int, binary: dict | None = None):
     with open(path, "rb") as f:
         f.seek(start)
         pos, n = start, base_line
@@ -122,6 +138,11 @@ def _iter_lines(path: str, start: int, end: int, base_line: int):
             if pos >= end:
                 break
             n += 1
+            if binary is not None and is_binary(raw):
+                binary["lines"] += 1
+                binary["bytes"] += len(raw)
+                pos += len(raw)
+                continue
             text = raw.decode("utf-8", "replace").rstrip("\r\n")
             if pos == 0 and text.startswith("﻿"):
                 text = text[1:]
@@ -139,6 +160,7 @@ def run_task(t: dict) -> dict:
     tp = TimeParser(_tz(t["tz"]), t["year"], tz_declared=t["tz_declared"], year_declared=t["year_declared"])
     seekable = fmt != "evtx"
     line_count = [0]
+    binary = {"lines": 0, "bytes": 0}
 
     def counted(it):
         for x in it:
@@ -148,7 +170,7 @@ def run_task(t: dict) -> dict:
     if fmt == "evtx":
         records = counted(iter_evtx(t["path"]))
     else:
-        records = PARSERS[fmt](counted(_iter_lines(t["path"], t["start"], t["end"], t["base_line"])), ctx)
+        records = PARSERS[fmt](counted(_iter_lines(t["path"], t["start"], t["end"], t["base_line"], binary)), ctx)
     cols: dict[str, list] = {f: [] for f in FIELD_NAMES}
     writer = None
     st = {"rows": 0, "unparsed": 0, "no_ts": 0, "min_ts": None, "max_ts": None}
@@ -219,7 +241,8 @@ def run_task(t: dict) -> dict:
     flush()
     if writer:
         writer.close()
-    st["lines"] = line_count[0]
+    st["lines"] = line_count[0] + binary["lines"]
+    st["binary_lines"], st["binary_bytes"] = binary["lines"], binary["bytes"]
     st.update(task=t["id"], rel=t["rel"], fmt=fmt, bytes=t["end"] - t["start"], seconds=time.time() - t0,
               event_types=dict(etypes.most_common(40)), unmapped=dict(unmapped_c.most_common(25)),
               hosts=len(hosts), domains=sorted(mapper.domains)[:20])
@@ -312,10 +335,11 @@ def ingest(root: str, out: str, workers: int | None = None, chunk_mb: int = 32,
     per_file: dict[str, dict] = {}
     for r in sorted(results, key=lambda r: r["task"]):
         f = per_file.setdefault(r["rel"], {"format": r["fmt"], "bytes": 0, "lines": 0, "rows": 0, "unparsed": 0, "no_ts": 0,
+                                           "binary_lines": 0, "binary_bytes": 0,
                                            "min_ts": None, "max_ts": None, "event_types": Counter(),
                                            "unmapped": Counter(), "tasks": 0})
         f["tasks"] += 1
-        for k in ("bytes", "lines", "rows", "unparsed", "no_ts"):
+        for k in ("bytes", "lines", "rows", "unparsed", "no_ts", "binary_lines", "binary_bytes"):
             f[k] += r[k]
         for k, fn in (("min_ts", min), ("max_ts", max)):
             if r[k] is not None:
@@ -330,6 +354,8 @@ def ingest(root: str, out: str, workers: int | None = None, chunk_mb: int = 32,
               "bytes": total_bytes, "rows": sum(f["rows"] for f in per_file.values()),
               "lines": sum(f["lines"] for f in per_file.values()),
               "unparsed": sum(f["unparsed"] for f in per_file.values()),
+              "binary_lines": sum(f["binary_lines"] for f in per_file.values()),
+              "binary_bytes": sum(f["binary_bytes"] for f in per_file.values()),
               "seconds": round(time.time() - t0, 2), "workers": workers, "tasks": len(tasks)}
     report["mb_per_s"] = round(total_bytes / 2**20 / max(report["seconds"], 1e-6), 2)
     with open(os.path.join(out, "ingest_report.json"), "w") as fh:

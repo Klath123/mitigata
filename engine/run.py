@@ -30,7 +30,7 @@ import networkx as nx
 from . import quality
 from .narrate import checker, guard, llm, template
 from .results import manifest, store
-from .store.db import connect, set_dataset_vars
+from .store.db import connect, dedup_events, set_dataset_vars
 
 
 class PeakMemory:
@@ -134,7 +134,7 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
         hops = build_hops(steps)
         path = build_path(steps, hops)
         inc = {"incident_id": cid, "risk": S, "verdict": "attack" if S >= REPORT else "review",
-               "score_breakdown": br, "alerts_merged": sum(len(n.rows) for n in ns),
+               "score_breakdown": br, "alerts_merged": sum(n.rows_total for n in ns),
                "hits_merged": len(ns),
                "stages": list(dict.fromkeys(s["stage"] for s in steps)),
                "first_seen": steps[0]["time"] if steps else "", "last_seen": steps[-1]["time"] if steps else "",
@@ -232,7 +232,7 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
         inc["steps"] = [_strip(s) for s in steps]
         inc["navigator_layer"] = navigator.layer(inc)
         (incidents if inc["verdict"] == "attack" else review).append(inc)
-    counts = {"hits": len(nodes), "raw_hit_rows": sum(len(n.rows) for n in nodes.values()), "clusters": len(comps),
+    counts = {"hits": len(nodes), "raw_hit_rows": sum(n.rows_total for n in nodes.values()), "clusters": len(comps),
               "attack_incidents": len(incidents), "review_incidents": len(review),
               "excluded_clusters": len(comps) - len(candidates),
               "privilege_graph": {"nodes": reach_g.number_of_nodes(), "edges": reach_g.number_of_edges()}}
@@ -254,7 +254,7 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
             rep = ingest(dataset, out, workers=workers, log=log)
         stages["ingest"] = round(time.time() - t, 2)
         log(f"  {rep['rows']:,} events from {len(rep['files'])} files, {rep['bytes'] / 2**20:.0f} MB, "
-            f"{rep['unparsed']} unparsed")
+            f"{rep['unparsed']} unparsed, {rep.get('binary_lines', 0):,} binary lines skipped")
 
         t = time.time()
         log("[2/6] store + entities")
@@ -262,6 +262,8 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
         if os.path.exists(db_path):
             os.remove(db_path)
         con = connect(out, memory_limit=memory)
+        n_dup = dedup_events(con)
+        log(f"  {n_dup:,} identical duplicate records left out of detection (kept in events_all)")
         dvars = set_dataset_vars(con)
         n_ip = build_ip_map(con)
         build_hosts(con)
