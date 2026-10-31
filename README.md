@@ -25,9 +25,10 @@ python -m engine.run data/s1 --out results/s1 --no-llm
 # 3. score it against ground truth
 python -m eval.score data/s1 results/s1
 
-# 4. browse it: http://localhost:8000
-#    Windows PowerShell: $env:ATTACKSTORY_RUN="results/s1"; uvicorn engine.api.app:app --port 8000
-ATTACKSTORY_RUN=results/s1 uvicorn engine.api.app:app --port 8000
+# 4. browse it: http://localhost:8000  (build the UI once: cd frontend && npm ci && npm run build)
+python -m engine.api results/s1          # or no argument: newest run; switch runs in the UI header
+#    one step: python -m engine.run data/s1 --out results/s1 --serve
+#    run made on a benchmark box: bash eval/pull_run.sh <key> <user@host> <remote-run-dir> <name>
 
 # tests
 pytest
