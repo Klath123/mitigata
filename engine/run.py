@@ -135,7 +135,7 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
         hops = build_hops(steps)
         path = build_path(steps, hops)
         inc = {"incident_id": cid, "risk": S, "verdict": "attack" if S >= REPORT else "review",
-               "score_breakdown": br, "alerts_merged": sum(len(n.rows) for n in ns),
+               "score_breakdown": br, "alerts_merged": sum(n.n_rows or len(n.rows) for n in ns),
                "hits_merged": len(ns),
                "stages": list(dict.fromkeys(s["stage"] for s in steps)),
                "first_seen": steps[0]["time"] if steps else "", "last_seen": steps[-1]["time"] if steps else "",
@@ -234,7 +234,7 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
         inc["steps"] = [_strip(s) for s in steps]
         inc["navigator_layer"] = navigator.layer(inc)
         (incidents if inc["verdict"] == "attack" else review).append(inc)
-    counts = {"hits": len(nodes), "raw_hit_rows": sum(len(n.rows) for n in nodes.values()), "clusters": len(comps),
+    counts = {"hits": len(nodes), "raw_hit_rows": sum(n.n_rows or len(n.rows) for n in nodes.values()), "clusters": len(comps),
               "attack_incidents": len(incidents), "review_incidents": len(review),
               "excluded_clusters": len(comps) - len(candidates),
               "privilege_graph": {"nodes": reach_g.number_of_nodes(), "edges": reach_g.number_of_edges()}}

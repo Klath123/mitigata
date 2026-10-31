@@ -22,6 +22,7 @@ SYSTEM_LOGON_IDS = {"0x3e7", "0x3e4", "0x3e5", "0x0"}
 LOGON_TYPES = {"win:4624", "auth:success", "win:5140", "win:5145"}
 MAX_FANOUT = 60
 HOP_LOOKBACK = 24 * 3_600_000
+MAX_ROWS_PER_NODE = 200
 SIGMA_STEP_MIN = 0.6                      # Sigma 'high' and above can be incident steps
 NETWORK_TYPES = {"net:flow", "fw:flow", "zeek:conn", "fw:ips", "fw:av", "fw:web", "fw:app", "dns:query"}
 REMOTE_REQUEST = {"win:4769", "win:4768", "win:4776"}   # logged on the DC, naming the requesting host
@@ -77,6 +78,7 @@ class Node:
     rarity: float
     rows: list[dict] = field(default_factory=list)
     noisy: bool = False                   # rule fires far too often in this dataset: strong links only
+    n_rows: int = 0                       # true number of evidence rows (rows holds at most MAX_ROWS_PER_NODE)
 
     @property
     def ts(self) -> int:
@@ -105,8 +107,12 @@ class Node:
 def load_nodes(con: duckdb.DuckDBPyConnection, resolver: IpResolver) -> dict[str, Node]:
     # low/medium Sigma hits stay in `hits` (labels, blind scoring, the evidence index) but do not become
     # incident steps: on real data they fire on routine activity and flood the review queue
-    cur = con.execute(f"SELECT * FROM hits WHERE NOT (kind IN ('sigma', 'hayabusa') AND severity < {SIGMA_STEP_MIN}) "
-                      f"ORDER BY ts")
+    # a hit keeps at most MAX_ROWS_PER_NODE evidence rows in memory (earliest first) plus its true row count:
+    # a noisy rule's hit can carry millions of identical rows that add nothing to linking or the story
+    cur = con.execute(f"""SELECT *, count(*) OVER (PARTITION BY hit_key) AS n_rows__ FROM hits
+                          WHERE NOT (kind IN ('sigma', 'hayabusa') AND severity < {SIGMA_STEP_MIN})
+                          QUALIFY row_number() OVER (PARTITION BY hit_key ORDER BY ts, src_file, line) <= {MAX_ROWS_PER_NODE}
+                          ORDER BY ts""")
     cols = [d[0] for d in cur.description]
     nodes: dict[str, Node] = {}
     for row in cur.fetchall():
@@ -117,6 +123,7 @@ def load_nodes(con: duckdb.DuckDBPyConnection, resolver: IpResolver) -> dict[str
                                            r["sub_technique"], r["tactic"], r["severity"] or 0.0, r["rarity"] or 0.0,
                                            noisy=bool(r.get("noisy")))
         n.severity = max(n.severity, r["severity"] or 0.0)
+        n.n_rows = r.pop("n_rows__") or 1
         # resolve the source host of logons/flows once
         src_h = r.get("src_host")
         if is_external(r.get("src_ip")):
@@ -270,7 +277,7 @@ class Linker:
                         idx[("payload", cmd)].append(k)
                 proc = (r.get("process") or "").lower()
                 base = proc.replace("/", "\\").rsplit("\\", 1)[-1]
-                if n.severity >= 0.9 and base and "\windows\\" not in proc and base not in COMMON_BINARIES:
+                if n.severity >= 0.9 and base and "\\windows\\" not in proc and base not in COMMON_BINARIES:
                     idx[("binary", base)].append(k)
                 if n.technique == "T1486" and r.get("target"):
                     ext = r["target"].rsplit(".", 1)[-1].lower() if "." in r["target"] else ""
