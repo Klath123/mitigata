@@ -12,6 +12,7 @@ from ..attack import stix
 from ..attack.killchain import choose_stage, order_score
 from ..entities.resolve import is_external, is_internal, is_system_account
 from ..graph.build import Node
+from ..schema import TACTIC_INDEX
 
 T_MAX = 6
 STEP_GAP = 15 * 60_000
@@ -118,7 +119,11 @@ def build_steps(nodes: list[Node]) -> list[dict]:
     first_host = steps[0]["host"] if steps else None
     seen: set[str] = set()
     out = []
-    for i, s in enumerate(sorted(steps, key=lambda s: s["ts"]), 1):
+    # same-second steps: earlier kill-chain tactic first (a logon before what it was used for), then technique,
+    # so the order is stable run to run and never reads backwards by accident
+    def chain_pos(s):
+        return min(TACTIC_INDEX.get(n.tactic, len(TACTIC_INDEX)) for n in s["_nodes"])
+    for i, s in enumerate(sorted(steps, key=lambda s: (s["ts"], chain_pos(s), s["technique"])), 1):
         rows = sorted(s["_rows"], key=lambda r: (r["ts"], r["src_file"], r["line"]))
         best = max(s["_nodes"], key=lambda n: (n.severity, bool(n.sub_technique)))
         subs = Counter(n.sub_technique for n in s["_nodes"] if n.sub_technique)
