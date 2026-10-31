@@ -22,7 +22,8 @@ from .graph.confidence import POSSIBLE, SOLID, noisy_or
 from .graph import export as graph_export
 from .graph.gaps import crosses, find_gaps, host_rates
 from .graph.tracer import trace
-from .hunt.rules import load_macros, run_rules
+from .hunt import hayabusa
+from .hunt.rules import HIT_COLS, load_macros, run_rules
 from .ingest.to_parquet import ingest
 from .lookahead import privmap
 from .lookahead.reach import build_graph as build_reach_graph, look_ahead
@@ -253,6 +254,9 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
             log("[1/6] ingest")
             rep = ingest(dataset, out, workers=workers, log=log)
         stages["ingest"] = round(time.time() - t, 2)
+        t = time.time()
+        hb_alerts = hayabusa.run(dataset, out, log=log)      # Windows-log detector, when installed
+        stages["hayabusa"] = round(time.time() - t, 2)
         log(f"  {rep['rows']:,} events from {len(rep['files'])} files, {rep['bytes'] / 2**20:.0f} MB, "
             f"{rep['unparsed']} unparsed")
 
@@ -283,7 +287,8 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
 
         t = time.time()
         log("[3/6] hunt")
-        rule_stats = run_rules(con, log=log)
+        rule_stats = run_rules(con, log=log, extra=(lambda c: hayabusa.load_hits(c, hb_alerts, dataset, HIT_COLS, log))
+                               if hb_alerts else None)
         quality.add_disabled(q, rule_stats)
         quality.write(out, q)
         stages["detection"] = round(time.time() - t, 2)

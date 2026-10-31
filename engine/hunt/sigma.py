@@ -310,6 +310,7 @@ def sigma_to_rule(doc: dict, source: str = "") -> dict | None:
     return {"id": rid, "title": doc.get("title", rid), "technique": tech, "sub_technique": sub,
             "tactic": tactic, "severity": SIGMA_SEVERITY.get(str(doc.get("level", "medium")).lower(), 0.3),
             "kind": "sigma", "source": source, "level": doc.get("level"),
+            "product": (doc.get("logsource") or {}).get("product"),
             # run_rules filters the log source once per group and runs `match` against that subset
             "group": group, "match": where[0],
             "sql": "SELECT e.* FROM events e WHERE " + " AND ".join(where + [group])}

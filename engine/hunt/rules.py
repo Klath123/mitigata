@@ -227,9 +227,13 @@ def _run_grouped(con: duckdb.DuckDBPyConnection, rules: list[dict], stats: dict,
     log(f"  {len(rules)} grouped rules over {len(by_group)} log sources in {time.time() - t0:.1f}s")
 
 
-def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, log=print) -> dict:
+def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, log=print, extra=None) -> dict:
+    """extra(con) -> stats: more hits inserted before the final pass (e.g. Hayabusa alerts), so they get the
+    same de-duplication, rarity, noise and baseline treatment as rule hits."""
     rules_loaded_here = rules is None
     rules = rules if rules is not None else load_rules()
+    if rules_loaded_here and os.environ.get("ATTACKSTORY_SIGMA_WINDOWS") == "0":
+        rules = [r for r in rules if not (r.get("kind") == "sigma" and r.get("product") == "windows")]
     con.execute(HITS_DDL)
     stats = {}
     have: dict[tuple, int] = {}
@@ -286,6 +290,8 @@ def run_rules(con: duckdb.DuckDBPyConnection, rules: list[dict] | None = None, l
         except Exception as ex:
             stats[r["id"]] = {"error": str(ex).splitlines()[0][:300]}
             log(f"  rule {r['id']}: ERROR {stats[r['id']]['error']}")
+    if extra:
+        stats.update(extra(con) or {})
     # one row per (rule, evidence line); rarity = how unusual this rule+process signature is dataset-wide;
     # noisy = the rule fires far more often than an attack could, relative to hosts x days in THIS dataset:
     # such hits join an incident only through strong evidence links (graph/build.py WEAK_LINKS)

@@ -104,7 +104,8 @@ class Node:
 def load_nodes(con: duckdb.DuckDBPyConnection, resolver: IpResolver) -> dict[str, Node]:
     # low/medium Sigma hits stay in `hits` (labels, blind scoring, the evidence index) but do not become
     # incident steps: on real data they fire on routine activity and flood the review queue
-    cur = con.execute(f"SELECT * FROM hits WHERE NOT (kind = 'sigma' AND severity < {SIGMA_STEP_MIN}) ORDER BY ts")
+    cur = con.execute(f"SELECT * FROM hits WHERE NOT (kind IN ('sigma', 'hayabusa') AND severity < {SIGMA_STEP_MIN}) "
+                      f"ORDER BY ts")
     cols = [d[0] for d in cur.description]
     nodes: dict[str, Node] = {}
     for row in cur.fetchall():

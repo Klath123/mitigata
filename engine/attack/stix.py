@@ -79,9 +79,16 @@ BUILTIN = {
     "T1566": ("Phishing", ["Initial Access"]),
     "T1566.001": ("Spearphishing Attachment", ["Initial Access"]),
     "T1567": ("Exfiltration Over Web Service", ["Exfiltration"]),
+    "T1562": ("Impair Defenses", ["Defense Evasion"]),
+    "T1562.001": ("Disable or Modify Tools", ["Defense Evasion"]),
     "T1569": ("System Services", ["Execution"]),
     "T1569.002": ("Service Execution", ["Execution"]),
 }
+
+
+# ATT&CK v18+ split Defense Evasion into Stealth and Defense Impairment; the kill chain (schema.TACTICS) and every
+# rule, dataset and tool label older than that use Defense Evasion, so both map back onto it
+RENAMED = {"Stealth": "Defense Evasion", "Defense Impairment": "Defense Evasion"}
 
 
 @lru_cache(maxsize=1)
@@ -93,15 +100,18 @@ def table() -> dict[str, tuple[str, list[str]]]:
         with open(path, encoding="utf-8") as f:
             bundle = json.load(f)
         out = dict(BUILTIN)
-        for o in bundle.get("objects", []):
-            if o.get("type") != "attack-pattern" or o.get("revoked") or o.get("x_mitre_deprecated"):
-                continue
+        objs = [o for o in bundle.get("objects", []) if o.get("type") == "attack-pattern" and not o.get("revoked")]
+        # live techniques win over deprecated ones; deprecated ones still label old rules and old datasets
+        for o in sorted(objs, key=lambda o: not o.get("x_mitre_deprecated")):
             ext = next((r["external_id"] for r in o.get("external_references", [])
                         if r.get("source_name") == "mitre-attack"), None)
             if ext:
-                tactics = [p["phase_name"].replace("-", " ").title().replace("And", "and")
-                           for p in o.get("kill_chain_phases", []) if p.get("kill_chain_name") == "mitre-attack"]
-                out[ext] = (o.get("name", ext), tactics)
+                tactics = list(dict.fromkeys(
+                    RENAMED.get(t, t) for t in (p["phase_name"].replace("-", " ").title().replace("And", "and")
+                                                for p in o.get("kill_chain_phases", [])
+                                                if p.get("kill_chain_name") == "mitre-attack")))
+                if tactics or ext not in out:
+                    out[ext] = (o.get("name", ext), tactics)
         return out
     except Exception:
         return BUILTIN
@@ -117,5 +127,8 @@ def name(tid: str | None) -> str | None:
 def tactics(tid: str | None) -> list[str]:
     if not tid:
         return []
-    t = table().get(tid) or table().get(tid.split(".")[0])
-    return list(t[1]) if t else []
+    for k in (tid, tid.split(".")[0]):
+        t = table().get(k)
+        if t and t[1]:
+            return list(t[1])
+    return []
