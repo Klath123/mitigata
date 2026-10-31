@@ -39,6 +39,9 @@ EVENT_FIELDS: list[tuple[str, pa.DataType]] = [
     ("cmdline", pa.string()),
     ("parent_cmdline", pa.string()),   # Sysmon ParentCommandLine
     ("original_file_name", pa.string()),  # PE OriginalFileName: survives renaming the binary
+    ("pe_description", pa.string()),   # PE metadata of the image (Sysmon 1 Description / Company / Product)
+    ("pe_company", pa.string()),
+    ("pe_product", pa.string()),
     ("hashes", pa.string()),           # Sysmon Hashes / file hash fields
     ("integrity_level", pa.string()),  # Low | Medium | High | System
     ("image_loaded", pa.string()),     # Sysmon 7 ImageLoaded (DLL)

@@ -44,6 +44,8 @@ fields:
   cmdline: [CommandLine, process.command_line, cmdline, command_line, CommandLineArgs, Details, cmd, command,
             ImagePath, registry.data.strings]
   parent_cmdline: [ParentCommandLine, process.parent.command_line, parent_command_line, parent_cmdline]
+  pe_company: [Company, process.pe.company, pe_company]
+  pe_product: [Product, process.pe.product, pe_product]
   original_file_name: [OriginalFileName, process.pe.original_file_name, original_file_name, OriginalFilename]
   hashes: [Hashes, Hash, process.hash.sha256, file.hash.sha256, sha256, SHA256, hashes, md5, MD5]
   integrity_level: [IntegrityLevel, process.integrity_level, integrity_level, MandatoryLabel]
@@ -99,6 +101,9 @@ event_overrides:
   "sysmon:13": {target: [TargetObject], cmdline: [Details]}
   "sysmon:22": {target: [QueryName], dst_host: [QueryName]}
   "ps:4104": {cmdline: [], message: [ScriptBlockText]}
+  # Sysmon process / image-load events: Description is the PE file description, not a message
+  "sysmon:1": {pe_description: [Description, process.pe.description], message: []}
+  "sysmon:7": {pe_description: [Description], message: []}
   # FortiGate UTM: hostname= is the remote site, not the reporting device
   "fw:web": {host: [devname], dst_host: [hostname], target: [url]}
   "fw:av": {host: [devname], dst_host: [hostname], target: [url]}

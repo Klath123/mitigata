@@ -37,6 +37,7 @@ FIELD_MAP = {
     "signed": "signed", "signaturestatus": "signed", "ticketencryptiontype": "ticket_encryption",
     "pipename": "target", "relativetargetname": "target", "payload": "message", "contextinfo": "message",
     "query": "target", "action": "action",           # category dns / firewall rules (any vendor)
+    "description": "pe_description", "company": "pe_company", "product": "pe_product",
 }
 NUMERIC = {"logon_type", "dst_port", "src_port"}
 
