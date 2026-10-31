@@ -44,7 +44,10 @@ def run(dataset: str, out: str, log=print) -> str | None:
         part = dst + f".{mode}"
         cmd = [exe, "dfir-timeline", "-d", os.path.abspath(dataset), *extra, "-t", "jsonl", "-o", part,
                "-p", "verbose", "-w", "-q", "-Q", "-K", "-U", "-O"]
-        subprocess.run(cmd, cwd=home, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        p = subprocess.run(cmd, cwd=home, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=False)
+        if p.returncode != 0:                 # never a silent "0 alerts": say Hayabusa itself failed, and why
+            err = (p.stderr or "").strip().splitlines()
+            log(f"  ! hayabusa ({mode}) exited {p.returncode}: {err[-1][:200] if err else 'no message'}")
         if os.path.exists(part):
             with open(part, encoding="utf-8", errors="replace") as a, open(dst, "a", encoding="utf-8") as b:
                 for line in a:
