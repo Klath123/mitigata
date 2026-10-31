@@ -88,7 +88,7 @@ Rules for these were written after seeing the file: not a blind measurement.
    by the user mid-edit, re-propose.
 6. Linux detection (weakest); fresh hidden scenarios F/G + one final blind score; update `bench/scoreboard.md`.
 7. Optional: onboarding agent (auto-mapping new log formats from samples, validated in code, once per vendor —
-   user liked the idea, do after correlation); (narrator + mapping suggestions now use Gemini `gemini-4-argon` via `GEMINI_API_KEY`; hackathon rerun with narration: put the key in `~/.gemini_key` on the big box, run `~/work/after/eval/narrate_firex.sh`); ChopChopGo / Wazuh for Linux.
+   user liked the idea, do after correlation); (narrator + mapping suggestions now use Gemini `gemini-3.8-flash` via `GEMINI_API_KEY`; hackathon rerun with narration: put the key in `~/.gemini_key` on the big box, run `~/work/after/eval/narrate_firex.sh`); ChopChopGo / Wazuh for Linux.
 
 ## 7. Gotchas learned the hard way
 

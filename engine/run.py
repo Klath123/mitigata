@@ -350,8 +350,13 @@ def main(argv=None):
     p.add_argument("--no-llm", action="store_true")
     p.add_argument("--skip-ingest", action="store_true", help="reuse existing Parquet in --out")
     p.add_argument("--hash-full", action="store_true", help="full SHA-256 of every input file in run_manifest.json")
+    p.add_argument("--serve", nargs="?", const=8000, type=int, metavar="PORT",
+                   help="after the run, serve its results + the UI (default port 8000)")
     a = p.parse_args(argv)
     run(a.dataset, a.out, a.workers, a.memory, not a.no_llm, a.skip_ingest, hash_full=a.hash_full)
+    if a.serve:
+        import subprocess, sys
+        subprocess.run([sys.executable, "-m", "engine.api", a.out, "--port", str(a.serve)])
 
 
 if __name__ == "__main__":

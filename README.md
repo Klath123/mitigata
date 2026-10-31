@@ -106,7 +106,7 @@ SigmaHQ rules: `python -m engine.hunt.fetch_sigma` (git-ignored, DRL 1.1). Bench
 
 - **MITRE ATT&CK names/tactics:** download `enterprise-attack.json` from https://github.com/mitre/cti
   (`enterprise-attack/enterprise-attack.json`) to `rules/attack/enterprise-attack.json` (git-ignored); otherwise a built-in table is used.
-- **LLM narrator / mapping suggestions:** set `GEMINI_API_KEY` (model via `ATTACKSTORY_LLM_MODEL`, default `gemini-4-argon`; thinking via `ATTACKSTORY_LLM_THINKING`, default `high`); `ATTACKSTORY_LLM=0` disables it.
+- **LLM narrator / mapping suggestions:** set `GEMINI_API_KEY` (model via `ATTACKSTORY_LLM_MODEL`, default `gemini-3.8-flash`; thinking via `ATTACKSTORY_LLM_THINKING`, default `high`); `ATTACKSTORY_LLM=0` disables it.
 - **Fast EVTX:** `evtx_dump` on `PATH` is used if present; otherwise pure-Python `python-evtx`.
 
 ## Not in git (regenerate or keep local)

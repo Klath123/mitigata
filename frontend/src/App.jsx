@@ -32,6 +32,7 @@ const TABS = [
 export default function App() {
   const [theme, setTheme] = useState(initTheme);
   const [stats, setStats] = useState(null);
+  const [runs, setRuns] = useState(null);
   const [list, setList] = useState(null);
   const [review, setReview] = useState(false);
   const [error, setError] = useState(null);
@@ -59,6 +60,11 @@ export default function App() {
 
   useEffect(() => { history.replaceState(null, "", id != null ? `#i=${id}&t=${tab}` : location.pathname); }, [id, tab]);
   useEffect(() => { get("/stats").then(setStats).catch(() => setStats(null)); }, []);
+  useEffect(() => { get("/runs").then(setRuns).catch(() => setRuns(null)); }, []);
+  // switching run reloads the page: every view then reads the new run from the API
+  const switchRun = (run) => fetch(`/reload?run=${encodeURIComponent(run)}`, { method: "POST" })
+    .then((r) => { if (!r.ok) throw new Error(`cannot open run ${run}`); location.hash = ""; location.reload(); })
+    .catch((e) => setError(e.message));
   useEffect(() => {
     get(`/incidents${review ? "?include_review=true" : ""}`).then((d) => { setList(d); setError(null); }).catch((e) => setError(e.message));
   }, [review]);
@@ -130,13 +136,17 @@ export default function App() {
           <span className="brand-mark"><svg width="14" height="14" viewBox="0 0 16 16"><path d="M2 12l4-4 3 3 5-6" stroke="#fff" strokeWidth="2.2" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
           AttackStory
         </button>
-        {stats && <span className="top-meta"><span className="chip outline">{stats.dataset}</span>{n(p.events)} events · {p.seconds}s · <b className="crit-txt">{c.attack_incidents} attacks</b></span>}
+        {runs?.runs?.length > 1 && (
+          <select className="run-pick" value={runs.active} onChange={(e) => switchRun(e.target.value)} aria-label="Results run" title="Results run (finished engine runs under results/)">
+            {runs.runs.map((r) => <option key={r.run} value={r.run}>{r.run} · {r.attack_incidents} attack · {r.review_incidents} review</option>)}
+          </select>)}
+        {stats && <span className="top-meta">{!(runs?.runs?.length > 1) && <span className="chip outline">{stats.dataset}</span>}{n(p.events)} events · {p.seconds}s · <b className="crit-txt">{c.attack_incidents} attacks</b></span>}
         <span className="spacer" />
         {timing && !briefing && <span className="chip low" title="Time to open this incident (target under 500 ms)">⚡ {Math.round(timing.ms)} ms</span>}
         <button className="btn ghost" onClick={toggleTheme} aria-label="Toggle theme">{theme === "dark" ? "☀" : "☾"}</button>
       </header>
 
-      {error && <div className="banner" style={{ margin: 16 }}><div><b>Cannot reach the AttackStory API</b>{error}. Start it with <code>uvicorn engine.api.app:app --port 8000</code> and set <code>ATTACKSTORY_RUN</code> to a results folder.</div></div>}
+      {error && <div className="banner" style={{ margin: 16 }}><div><b>Cannot reach the AttackStory API</b>{error}. Start it with <code>python -m engine.api</code> (newest run under results/) or <code>python -m engine.api results/&lt;run&gt;</code>.</div></div>}
 
       {briefing ? (
         <main className="page"><Briefing stats={stats} list={list} onSelect={select} review={review} setReview={setReview} /></main>

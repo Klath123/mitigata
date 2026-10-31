@@ -36,6 +36,8 @@ q { quotes: "“" "”"; font-family: var(--mono); font-size: 12.5px; }
 .app { display: grid; grid-template-rows: 56px minmax(0, 1fr); height: 100vh; }
 .app.is-briefing { display: block; height: auto; min-height: 100vh; }
 .topbar { position: sticky; top: 0; z-index: 10; height: 56px; display: flex; align-items: center; gap: 16px; padding: 0 20px; background: color-mix(in srgb, var(--panel) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+.run-pick { font: inherit; font-size: 13px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; max-width: 46vw; }
+.run-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15.5px; letter-spacing: -.02em; }
 .brand-mark { width: 26px; height: 26px; border-radius: 8px; background: linear-gradient(135deg, #ff6b6b, #e5484d); display: grid; place-items: center; box-shadow: 0 4px 12px rgba(229, 72, 77, .35); }
 .top-meta { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; }

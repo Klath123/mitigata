@@ -10,7 +10,7 @@ import json
 import os
 from datetime import datetime, timezone
 
-MODEL = os.environ.get("ATTACKSTORY_LLM_MODEL", "gemini-4-argon")      # Google's flagship reasoning model
+MODEL = os.environ.get("ATTACKSTORY_LLM_MODEL", "gemini-3.8-flash")    # Google's strongest Flash: fast, cheap
 THINKING = os.environ.get("ATTACKSTORY_LLM_THINKING", "high")          # low | medium | high
 
 SYSTEM = """You are a senior incident responder writing the narrative of a security incident for a SOC team.
@@ -110,11 +110,15 @@ def generate_json(system: str, prompt: str, schema: dict, what: str) -> dict | N
         return None
     try:
         from google import genai
+        from google.genai import types
     except ImportError:
         print(f"  llm: {what}: google-genai not installed, skipped")
         return None
     try:
-        client = genai.Client()             # reads GEMINI_API_KEY; keep a reference, a temporary closes too early
+        # reads GEMINI_API_KEY; keep a reference (a temporary closes too early). Bounded: quota or server errors
+        # must not stall the run, the template report is the fallback
+        client = genai.Client(http_options=types.HttpOptions(
+            timeout=180_000, retry_options=types.HttpRetryOptions(attempts=3)))
         it = client.interactions.create(
             model=MODEL,
             system_instruction=system,

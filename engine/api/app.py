@@ -37,17 +37,40 @@ class Results:
         return inc
 
 
+RESULTS = os.environ.get("ATTACKSTORY_RESULTS", os.path.join(ROOT, "results"))
+
+
+def list_runs(root: str | None = None) -> list[dict]:
+    """Finished runs under the results folder (a folder with incidents.json), newest first."""
+    root = root or RESULTS
+    out = []
+    for name in os.listdir(root) if os.path.isdir(root) else []:
+        p = os.path.join(root, name, "incidents.json")
+        if not os.path.exists(p):
+            continue
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        out.append({"run": name, "dataset": d.get("dataset"), "finished": os.path.getmtime(p),
+                    "attack_incidents": len(d.get("incidents", [])), "review_incidents": len(d.get("review", [])),
+                    "events": (d.get("processed") or {}).get("events")})
+    return sorted(out, key=lambda r: -r["finished"])
+
+
 def create_app(run_dir: str | None = None) -> FastAPI:
-    run_dir = run_dir or os.environ.get("ATTACKSTORY_RUN", os.path.join(ROOT, "results", "latest"))
+    run_dir = run_dir or os.environ.get("ATTACKSTORY_RUN")
+    if not run_dir:                                    # default: the newest finished run
+        runs = list_runs()
+        run_dir = os.path.join(RESULTS, runs[0]["run"]) if runs else os.path.join(RESULTS, "latest")
     app = FastAPI(title="AttackStory", version="1.0",
                   description="Logs-to-incidents engine: ranked incidents, attack paths, look-ahead and reports.")
-    state = {"r": None}
+    state = {"r": None, "dir": run_dir}
 
     def R() -> Results:
         if state["r"] is None:
-            if not os.path.exists(os.path.join(run_dir, "incidents.json")):
-                raise HTTPException(503, f"no results in {run_dir}; run `python -m engine.run <logs> --out {run_dir}`")
-            state["r"] = Results(run_dir)
+            d = state["dir"]
+            if not os.path.exists(os.path.join(d, "incidents.json")):
+                raise HTTPException(503, f"no results in {d}; run `python -m engine.run <logs> --out {d}`")
+            state["r"] = Results(d)
         return state["r"]
 
     @app.middleware("http")
@@ -69,8 +92,12 @@ def create_app(run_dir: str | None = None) -> FastAPI:
 
     @app.get("/health")
     def health():
-        ok = os.path.exists(os.path.join(run_dir, "incidents.json"))
-        return {"ok": ok, "run_dir": run_dir}
+        ok = os.path.exists(os.path.join(state["dir"], "incidents.json"))
+        return {"ok": ok, "run_dir": state["dir"], "run": os.path.basename(os.path.normpath(state["dir"]))}
+
+    @app.get("/runs")
+    def runs():
+        return {"active": os.path.basename(os.path.normpath(state["dir"])), "runs": list_runs()}
 
     @app.get("/incidents")
     def incidents(include_review: bool = Query(False, description="also list clusters scored 0.4-0.7"),
@@ -157,10 +184,14 @@ def create_app(run_dir: str | None = None) -> FastAPI:
             return json.load(f)
 
     @app.post("/reload")
-    def reload():
+    def reload(run: str | None = Query(None, description="switch to this run under the results folder")):
+        if run is not None:
+            if run not in {r["run"] for r in list_runs()}:     # only listed folder names: no path tricks
+                raise HTTPException(404, f"no finished run named {run!r}")
+            state["dir"] = os.path.join(RESULTS, run)
         state["r"] = None
         R()
-        return {"reloaded": True}
+        return {"reloaded": True, "run": os.path.basename(os.path.normpath(state["dir"]))}
 
     return app
 
