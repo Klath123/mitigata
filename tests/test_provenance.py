@@ -90,3 +90,22 @@ def test_run_manifest(run):
         f.write("changed\n")
     assert manifest.file_hash(str(root / "events.jsonl"))["sha256"] != first
     assert manifest.file_hash(str(root / "events.jsonl"), full=True)["hash_kind"] == "full"
+
+
+def test_account_identity_for_linking():
+    from engine.graph.build import account_key, norm_domain
+    domains = {"administrator": {"CORP", "LAB"}, "adm_ravi": {"CORP"}}
+    assert norm_domain("corp.local") == norm_domain("CORP") == "CORP"
+    # same short name, different domains: different identities
+    assert account_key("administrator", "CORP", domains) != account_key("administrator", "LAB", domains)
+    # DNS and NetBIOS spellings of one domain: same identity
+    assert account_key("adm_ravi", "corp.local", domains) == account_key("adm_ravi", "CORP", domains)
+    # no domain in the log (Linux/Sysmon) but only one known domain: linked to it
+    assert account_key("adm_ravi", None, domains) == "adm_ravi@CORP"
+    # no domain and the name exists in several domains: ambiguous, never linked by account
+    assert account_key("administrator", None, domains) is None
+    # never seen with a domain (Linux-only account): bare name
+    assert account_key("deploy", None, domains) == "deploy"
+    # local accounts on different machines are different people
+    assert account_key("administrator", "WS-01", domains) != account_key("administrator", "WS-02", domains)
+    assert account_key("system", "NT AUTHORITY", domains) is None

@@ -15,7 +15,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 RULES_DIR = os.path.join(ROOT, "rules")
 SEVERITY = {"info": 0.1, "informational": 0.1, "low": 0.25, "medium": 0.5, "high": 0.75, "critical": 1.0}
 
-HIT_COLS = ["src_file", "line", "ts", "host", "user", "src_ip", "dst_ip", "dst_port", "src_host", "dst_host",
+HIT_COLS = ["src_file", "line", "ts", "host", "user", "domain", "src_ip", "dst_ip", "dst_port", "src_host", "dst_host",
             "process", "parent", "process_guid", "parent_guid", "target_guid", "logon_id", "logon_type", "pid",
             "ppid", "target", "target_user", "group", "cmdline", "bytes_out", "event_type", "message", "action"]
 
@@ -23,6 +23,7 @@ HITS_DDL = """
 CREATE OR REPLACE TABLE hits (
   rule_id VARCHAR, rule_title VARCHAR, kind VARCHAR, technique VARCHAR, sub_technique VARCHAR, tactic VARCHAR,
   severity DOUBLE, hit_key VARCHAR, src_file VARCHAR, line BIGINT, ts BIGINT, host VARCHAR, "user" VARCHAR,
+  domain VARCHAR,
   src_ip VARCHAR, dst_ip VARCHAR, dst_port INTEGER, src_host VARCHAR, dst_host VARCHAR, process VARCHAR,
   parent VARCHAR, process_guid VARCHAR, parent_guid VARCHAR, target_guid VARCHAR, logon_id VARCHAR,
   logon_type INTEGER, pid BIGINT, ppid BIGINT, target VARCHAR, target_user VARCHAR, "group" VARCHAR,

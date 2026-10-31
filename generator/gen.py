@@ -102,6 +102,12 @@ def generate(out: str, size: int, seed: int, days: int, scenarios: list[str]) ->
             gt_evidence.setdefault(e.tag, []).append(eid)
             gt_first_ts[e.tag] = min(gt_first_ts.get(e.tag, e.ts), e.ts)
     sink.close()
+    mpath = os.path.join(out, "manifest.json")          # the generator knows the year: declare it
+    with open(mpath) as f:
+        man = json.load(f)
+    man["year"] = datetime.fromtimestamp(START / 1000, timezone.utc).year
+    with open(mpath, "w") as f:
+        json.dump(man, f, indent=1)
 
     gt = {"dataset": os.path.basename(os.path.abspath(out)), "seed": seed, "days": days,
           "start": iso_z(START), "end": iso_z(end), "bytes": sink.bytes,
