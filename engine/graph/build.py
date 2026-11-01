@@ -15,6 +15,7 @@ from itertools import chain
 import duckdb
 import networkx as nx
 
+from ..attack import stix
 from ..entities.resolve import IpResolver, is_external, is_internal, is_local, is_system_account
 from .confidence import POSSIBLE, WEIGHTS, noisy_or
 
@@ -133,8 +134,9 @@ def load_nodes(con: duckdb.DuckDBPyConnection, resolver: IpResolver) -> dict[str
         total = r.pop("rows_total__")
         n = nodes.get(r["hit_key"])
         if n is None:
-            n = nodes[r["hit_key"]] = Node(r["hit_key"], r["rule_id"], r["rule_title"], r["kind"], r["technique"],
-                                           r["sub_technique"], r["tactic"], r["severity"] or 0.0, r["rarity"] or 0.0,
+            tech, sub = stix.current(r["technique"], r["sub_technique"])   # retired ATT&CK ids -> current ones
+            n = nodes[r["hit_key"]] = Node(r["hit_key"], r["rule_id"], r["rule_title"], r["kind"], tech,
+                                           sub, r["tactic"], r["severity"] or 0.0, r["rarity"] or 0.0,
                                            noisy=bool(r.get("noisy")), rows_total=total)
         n.severity = max(n.severity, r["severity"] or 0.0)
         # resolve the source host of logons/flows once

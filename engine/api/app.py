@@ -1,4 +1,5 @@
-"""AttackStory API (FR-7). Serves precomputed results only: opening an incident never re-scans logs.
+"""AttackStory API (FR-7). Serves precomputed results: opening an incident never re-scans logs. Log files can be
+sent with the /jobs endpoints (engine/api/uploads.py), which run the engine in the background.
 
 ATTACKSTORY_RUN=results/<run> uvicorn engine.api.app:app --port 8000
 """
@@ -28,6 +29,8 @@ class Results:
         self.summary, self.full, self.stats = store.load(run_dir)
         ev = os.path.join(run_dir, "evidence.json")
         self.evidence = json.load(open(ev, encoding="utf-8")) if os.path.exists(ev) else {}
+        en = os.path.join(run_dir, "entities.json")          # knowledge-base views only (engine/kb.py)
+        self.entities = json.load(open(en, encoding="utf-8")) if os.path.exists(en) else None
         self.loaded_at = time.time()
 
     def incident(self, iid: int) -> dict:
@@ -64,6 +67,8 @@ def create_app(run_dir: str | None = None) -> FastAPI:
     app = FastAPI(title="AttackStory", version="1.0",
                   description="Logs-to-incidents engine: ranked incidents, attack paths, look-ahead and reports.")
     state = {"r": None, "dir": run_dir}
+    from .uploads import register as register_uploads
+    register_uploads(app, ROOT, RESULTS)          # send log files and analyse them (POST /jobs ...)
 
     def R() -> Results:
         if state["r"] is None:
@@ -116,7 +121,8 @@ def create_app(run_dir: str | None = None) -> FastAPI:
                 hosts=len(inc.get("blast_radius", {}).get("confirmed", {}).get("hosts", [])),
                 steps=len(inc["steps"]), first_seen=inc["first_seen"], last_seen=inc["last_seen"],
                 score_breakdown=inc.get("score_breakdown"), injection_flags=len(inc.get("injection_flags", [])),
-                entry=(inc["steps"][0].get("technique_name") or inc["steps"][0]["technique"]) if inc["steps"] else None,
+                entry=_entry(inc["steps"][0]) if inc["steps"] else None,
+                kb=inc.get("kb"),
                 outcome=(inc["steps"][-1].get("technique_name") or inc["steps"][-1]["technique"]) if inc["steps"] else None,
                 could_reach=len(inc.get("blast_radius", {}).get("potential", {}).get("potential_hosts", [])),
                 external_source=next((h["from"] for h in inc.get("hops", []) if h.get("external")), None),
@@ -167,13 +173,42 @@ def create_app(run_dir: str | None = None) -> FastAPI:
             raise HTTPException(404, "evidence id is not part of any incident")
         return {"evidence_id": evidence_id, **ev}
 
+    @app.get("/graph")
+    def graph():
+        """The run's knowledge graph (incidents, steps, hosts, accounts, internet addresses, techniques, indicators),
+        as written by engine/graph/export.py; the same graph is in graph/attackstory.graphml and graph/neo4j/."""
+        p = os.path.join(R().run_dir, "graph", "graph.json")
+        if not os.path.exists(p):
+            raise HTTPException(404, "no graph.json for this run (made by runs from 2026-11-01 on)")
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+
+    @app.get("/kb/entities")
+    def kb_entities(q: str = Query("", description="substring of the name"),
+                    kind: str = Query("", pattern="^(|host|account|external_ip)$"),
+                    only: str = Query("", pattern="^(|incidents|new)$", description="in an incident / new in the latest batch"),
+                    limit: int = Query(200, ge=1, le=5000)):
+        """Knowledge-base memory: every host, account and internet address seen across batches."""
+        ents = R().entities
+        if ents is None:
+            raise HTTPException(404, "this run is not a knowledge base (python -m engine.kb ...)")
+        out = [e for e in ents if (not kind or e["kind"] == kind) and (not q or q.lower() in str(e["name"]).lower())
+               and (only != "incidents" or e["incidents"]) and (only != "new" or e.get("new_in_latest_batch"))]
+        return {"total": len(ents), "matched": len(out),
+                "counts": {k: sum(e["kind"] == k for e in ents) for k in ("host", "account", "external_ip")},
+                "new_in_latest_batch": sum(bool(e.get("new_in_latest_batch")) for e in ents),
+                "entities": out[:limit]}
+
     @app.get("/stats")
     def stats():
         r = R()
         s = r.stats
         return {"dataset": s.get("dataset"), "processed": s.get("processed"), "stages_seconds": s.get("stages_seconds"),
                 "counts": s.get("counts"), "files": s.get("files"), "data_quality": s.get("data_quality"),
-                "rules": {k: v for k, v in (s.get("rules") or {}).items() if v.get("hits") or v.get("error")}}
+                "rules": {k: v for k, v in (s.get("rules") or {}).items()
+                          if not k.startswith("_") and (v.get("hits") or v.get("error"))},
+                "rules_loaded": sum(not k.startswith("_") for k in (s.get("rules") or {})),
+                "knowledge_base": s.get("knowledge_base")}
 
     @app.get("/quality")
     def data_quality():
@@ -236,11 +271,24 @@ def render_markdown(inc: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _entry(step: dict) -> str:
+    """How it started: of the first step's labels (merged ones too), the earliest kill-chain stage."""
+    from ..schema import TACTIC_INDEX
+    labels = [step] + step.get("also", [])
+    first = min(labels, key=lambda x: TACTIC_INDEX.get(x.get("stage"), 99))
+    return first.get("technique_name") or first["technique"]
+
+
 def recommended_actions(inc: dict) -> list[str]:
     br = inc.get("blast_radius", {}).get("confirmed", {})
     out = []
-    if br.get("hosts"):
-        out.append(f"Isolate: {', '.join(br['hosts'][:10])}")
+    infra = set(br.get("infrastructure") or [])
+    iso = [h for h in br.get("hosts", []) if h not in infra]
+    if iso:
+        out.append(f"Isolate: {', '.join(iso[:10])}")
+    if infra:
+        out.append(f"Protect (do not isolate): restrict admin access to and review the configuration of "
+                   f"{', '.join(sorted(infra)[:10])}")
     if br.get("users"):
         out.append(f"Reset credentials and revoke sessions: {', '.join(br['users'][:10])}")
     for la in inc.get("look_ahead", [])[:3]:

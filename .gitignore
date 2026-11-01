@@ -34,3 +34,8 @@ rules/sigma/sigmahq/
 *.log
 ss/
 rules/sigma/.compiled.json
+# local-only notes (server logins, keys): never commit
+docs/*.local.md
+# submission archive
+/dist/
+logs/

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 
+from .lines import bounded_lines
 from .parsers import _APACHE, _AUDIT_HDR, _ISOSYS, _RFC3164, _RFC5424, parse_kv, sniff_csv_header
 
 SAMPLE_LINES = 60
@@ -13,7 +14,9 @@ EVTX_MAGIC = b"ElfFile\x00"
 def read_sample(path: str, n: int = SAMPLE_LINES) -> list[str]:
     out = []
     with open(path, "rb") as f:
-        for raw in f:
+        for raw, _ in bounded_lines(f):
+            if raw is None:
+                continue
             s = raw.decode("utf-8-sig", "replace").rstrip("\r\n")
             if s.strip():
                 out.append(s)

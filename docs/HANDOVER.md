@@ -1,108 +1,83 @@
-# AttackStory — handover (2026-11-01)
+# AttackStory: team handover (updated 2026-11-01)
 
-Start here in a new session. Read with `README.md` (setup, pipeline by log family) and `bench/scoreboard.md`
-(numbers per round, partly outdated — the table below is current).
+Start here in a new session, together with `README.md` (what it is, how to run it) and `bench/scoreboard.md`
+(numbers per round, partly outdated; section 4 below is current). Server logins and keys are in
+`docs/INFRA.local.md`, which is git-ignored on purpose: never commit them.
 
 ## 1. Where the code is
 
-- Repo: `D:\mitigata\attackstory`, GitHub `Klath123/mitigata`, branch `main`.
-- **Pushed** up to `088e3a1` (merge of the teammate's `feature/frontend-and-improvements`: React UI + engine work).
-- **Local only (not pushed yet):** `40932fe` quality accepts old ingest reports · `245c65d` speed (skip flow-ownership
-  queries without process telemetry, Sigma compile cache, cheaper memory sampler) · `5164377` incident formation
-  (critical-asset escalation, `same_endpoint` links, firewall role) · `cdbf587` prevalence noise + admin-from-internet
-  severity. Push only when the user says so.
-- Tests: `python -m pytest` → 44 pass (also under Python 3.11 on AWS).
-- SigmaHQ rules are not in git: `python -m engine.hunt.fetch_sigma` (windows, linux, network, web, cloud, identity).
+- Repo `Klath123/mitigata`, branch `main`. Commits are GPG-signed (the passphrase prompt can time out: ask, never
+  bypass signing). Push only when the team agrees.
+- Tests: `python -m pytest` → 69 pass (Python 3.11-3.14).
+- Not in git: SigmaHQ rules (`python -m engine.hunt.fetch_sigma`), the MITRE ATT&CK bundle
+  (`rules/attack/enterprise-attack.json`, see README), datasets, run outputs, the built UI.
 
-## 2. The three benchmark machines
+## 2. What changed on 2026-11-01
 
-| Box | Login | Role | Data |
-|---|---|---|---|
-| **GCP #1** (4 vCPU / 15 GB) | `ssh -i ~/.ssh/gcp-vm.pem pater@34.130.250.84` | synthetic scoreboard, tool tests | `/data/logs/bench/{synth,corpora,out,runs,tools}`; hackathon original `/data/logs/firex-10G.log.gz` |
-| **AWS** (4 vCPU / 15 GB, Amazon Linux 2023, py3.11) | `ssh -i ~/.ssh/mitigata.pem ec2-user@13.207.5.250` | blind scoreboard | `~/bench/{corpora,synth,out,runs,tools}`; IP changes if the instance is stopped |
-| **Big box** (8 vCPU / 30 GB) | `ssh -i ~/.ssh/gce-big.pem pater@34.85.120.251` | hackathon file (full size) | `/data/logs/bench/hackathon/firex/firex-10G.log.gz`, runs in `/data/logs/bench/runs/firex_{before,after}` |
-
-Code is synced by `tar czf - ... | ssh ... tar xzf -` (no git on the boxes). Each box has `~/venv` (DuckDB 2.0).
-Hayabusa: GCP `/data/logs/bench/tools/hayabusa/hayabusa-4.3.1-lin-x64-gnu`; AWS `~/bench/tools/hayabusa/hayabusa-4.3.1-lin-x64-musl`
-(gnu build needs glibc 2.38). Zircolite in `~/zvenv` on GCP #1 (benchmarked, not integrated). Heavy runs go on the
-boxes, not the laptop (user preference).
-
-**Done:** GCP #1 synthetic check of `cdbf587` passed (`/data/logs/bench/out/phase6/summary.txt`, 2026-10-31 19:32Z).
-**Done:** big box hackathon rerun with `cdbf587` (351 s, peak 6.02 GB, **5 incidents: 2 attack + 3 review**; the
-earlier "44 review" was a misread, see section 5 item 6).
-**Stopped 2026-11-01:** big box "before" baseline (old engine): never left correlation in 2 h 52 m and reached
-9.07 GB RSS, over the 8 GB budget. The new engine does the same file in 351 s at a 6.0 GB peak.
+| Area | Change |
+|---|---|
+| Ingest | bounded line reading: a 15 GB newline-free stretch (firex-19g) is skipped in 1 MiB pieces instead of loaded (was a 30 GB OOM) |
+| Detection | command-line cleaner (`engine/ingest/clean.py`): caret / quote / backtick / concatenation / Unicode-dash / env-alias tricks undone, `-enc` and `FromBase64String` decoded; every Sigma rule matches the original OR the cleaned text |
+| Labels | full MITRE ATT&CK bundle; retired ids (T1562.x, T1070.001...) translated to current ones (T1685, T1686.x) in one place for every source; one label table for change events (`rules/mappings/attack_labels.yaml`, 20 change kinds, platform-aware, validated against the bundle by tests); chain check `label_matches_evidence` |
+| Steps | one log line is one step (merged labels carried in `also`); a broad step gives up lines a specific step owns; a single event is never an attack on its own |
+| Knowledge base | `engine/kb.py`: hourly batches carry hits of the last 24 h plus every open incident, incidents grow in place, entity first/last seen, sign-in history, `first_only` rules, `python -m engine.kb watch`; continuing batches skip the per-batch warm-up |
+| History detection | known account signing in from an internet address it never used (knowledge base, no public rule to evade) |
+| Agents | verification agent (`engine/verify_agent.py`, second opinion per incident, code-checked, shown as a chain check); config agent (`engine/ingest/suggest.py`: proposals verified by code + agent, `--auto-apply`) |
+| LLM | Groq `openai/gpt-oss-120b` → `gpt-oss-20b` → Gemini, first that answers; JSON mode + our own checks; rate-limit wait |
+| Narration | plain-English prompt with summary / why suspicious / timeline / impact / actions / unknowns; firewalls are protected, never isolated |
+| UI | knowledge-base page (batches, incidents across batches, entity explorer), knowledge graph (`/graph`), verification agent card, full narrative sentences, corrected pipeline details |
 
 ## 3. How to measure
 
-- Full scoreboard: `bash eval/bench.sh <tag> <bench_dir> ~/venv/bin/python [all|synth|blind]`, with
-  `ATTACKSTORY_HAYABUSA=<binary>` to enable Hayabusa. `synth` = dev_s1, clean, hold_de, vary, nosysmon;
-  `blind` = EVTX-ATTACK-SAMPLES (261), OTRF (97), Splunk attack_data (530), Splunk Linux (148), mix (30 OTRF in clean).
-- Scoring: `eval/score.py` (synthetic, exact ground truth), `eval/blind.py` (public corpora), `eval/tool_score.py`
-  (Hayabusa / Zircolite alerts). Generator: `generator/gen.py` (`--vary`, `--drop`), holdout D/E in `generator/holdout.py`
-  (no longer blind — looked at while developing).
-- **Gate for every change:** `clean` 0 false attack incidents, dev_s1 100%, then blind numbers.
+- Full scoreboard: `bash eval/bench.sh <tag> <bench_dir> ~/venv/bin/python [all|synth|blind]` (Hayabusa via
+  `ATTACKSTORY_HAYABUSA=<binary>`). `synth` = dev_s1, clean, hold_de, vary, nosysmon; `blind` = EVTX-ATTACK-SAMPLES,
+  OTRF, Splunk attack_data, Splunk Linux, mix.
+- Scoring: `eval/score.py` (synthetic, exact ground truth; compares in current ATT&CK ids), `eval/blind.py`,
+  `eval/tool_score.py`. Gate for every change: `clean` 0 false attack incidents, dev_s1 100%, then blind numbers.
+- Knowledge base on real data: `bash eval/kb_split_test.sh` (first 1 M lines of the hackathon file in two batches,
+  cut inside incident 1).
 
 ## 4. Current numbers
 
 | Set | Result |
 |---|---|
-| dev_s1 (ours) | 100% steps / paths, event recall 100%, precision 99%, 0 decoys (with `5164377`) |
-| clean | 0 attack incidents / 16 review (with `cdbf587`) |
-| holdout D/E | 81% steps, 75% labels, 50% paths, 0% false alarms (1 decoy included) |
-| vary / nosysmon | 100% / 85% steps, 0 false alarms |
-| EVTX blind | 93% any hit, 54% tactic right (with Hayabusa) |
-| OTRF blind | 70% technique, 89% tactic, 42% in attack incident |
-| Splunk blind | 41% technique, 56% tactic, **28% in attack incident** (was 9%; measured with a looser escalation — rerun with final code) |
-| Splunk Linux blind | 7–10% technique — weakest area |
-| mix (real attacks in our network) | 80–83% technique, 70% in attack-or-review |
-| Hackathon file (9.17 M events) | correlation 53 s (was 2 h+), peak 6.0 GB (was 8.9), 2 attack incidents |
+| dev_s1 (ours) | 100% steps / paths, event recall 100%, precision 99%, 0 decoys |
+| clean | 0 attack incidents |
+| holdout D/E | 81% steps, 75% labels, 50% paths, 0% false alarms |
+| EVTX / OTRF / Splunk blind | 93% any hit / 70% technique / 41% technique (rerun pending with final code) |
+| Hackathon firex-10G (9.17 M events, 6.1 GB) | 294 s, peak 7.96 GB, 2 attacks + 3 review; incident 1 passes all 11 chain checks |
+| Hackathon firex-19g | 11.5 min, peak 6 GB, 0 incidents: the file is broken (every line has the same timestamp; 14.6 GB NUL tail at 4 GiB) |
+| Two-batch knowledge-base test | batch 1: 1 review → batch 2: same incident updated in place, promoted to attack, 3 steps = full-file result |
 
-## 5. Hackathon file (FortiGate, from the organisers, no answer key)
+## 5. Hackathon findings (FortiGate, no answer key)
 
-`firex-10G.log.gz`: 9.1 M FortiGate key=value lines + ~6.7 M lines of binary/PDF junk (skipped) + 919 k duplicates.
-`eventtime` equals local `date`/`time` read as UTC (5h30 inconsistency in the data; ordering unaffected).
-Found so far:
-1. **attack** — `tejas.roy`: admin access to the FortiGate from the internet (78.120.139.0) → disk logging disabled →
-   firewall policy objects purged → logging re-enabled (T1078 → T1562), 23 Oct 16:31–20:36.
-2. **attack** — `rakes`: admin logon from the internet + config change.
-3. review — `keerat.ghughal`: SSL-VPN tunnels alternating Türkiye ↔ United States within minutes (shared/stolen creds).
-4. foreign admin logins: `deepika.khan` (Russia, ×3), `parul.sinha` (Türkiye), `svc_backup30` (service account, Ireland)
-   — after `cdbf587`: parul.sinha and deepika.khan are review incidents (0.51); svc_backup30 not in the top 15 (check).
-5. 416 k failed admin logins (invalid user names, random IPs) — spray/noise, grouped.
-6. "scan → upload" on endpoints = artefact (flows sharing the last timestamp). **Fixed by `cdbf587`** (both rules are
-   `prevalent` + `noisy`, so weak links are blocked). The ~40 review incidents at 0.481 were **stale files** in
-   `incidents/` from the 19:08 run: `results/store.write` never cleared the folder (now fixed, `tests/test_store.py`).
-   The stale files were moved to `/data/logs/bench/runs/firex_after_stale/`. Lesson: count incidents from `incidents.json`.
-Rules for these were written after seeing the file: not a blind measurement.
+1. **attack**: `tejas.roy` from 78.120.139.0 on the FortiGate: logging off 16:31 (T1685, + first access T1078) →
+   firewall policies purged 18:28 (T1686.002) → logging back on 20:36 (T1070), 23 Oct.
+2. **attack**: `rakes` from 203.228.177.117 creates admin `svc_backup30` 03:55 (T1136.001) → it signs in 04:02
+   (T1078.003) → deleted 04:07 (T1070, backdoor removed), 29 Oct.
+3. review: `keerat.ghughal` SSL-VPN alternating Türkiye ↔ United States; review: foreign admin logins
+   (`deepika.khan` Russia, `parul.sinha` Türkiye).
+4. 1.1 M failed admin logins (spray/noise, grouped). Rules for these were written after seeing the file: not blind.
+5. firex-19g should be reported to the organisers as broken (fixed timestamp, NUL tail, file starts mid-line).
 
-## 6. Next steps (agreed order)
+## 6. Next steps
 
-1. ~~Endpoint scan→upload review flood~~: not a real problem, it was stale files (section 5 item 6). Baseline stopped.
-2. Rerun the **blind** set on AWS with the final code (`bash ~/round6.sh $HOME/bench blind <hayabusa-musl>`) — honest
-   before/after for incident formation; check the small drops (Linux 10→7%, mix technique 83→80%).
-3. Write the **hackathon findings report** (timeline, evidence lines, what the logs cannot show) — as an Artifact.
-4. Correlation, remaining: build links set-based in DuckDB (Python loops still dominate on huge hit sets); hub
-   handling (relative fan-out instead of `MAX_FANOUT`); incident ranking / merging / campaigns.
-5. Speed: Hayabusa `-m low` (informational alerts make the OTRF hunt ~5× slower) — a first attempt was rejected
-   by the user mid-edit, re-propose.
-6. Linux detection (weakest); fresh hidden scenarios F/G + one final blind score; update `bench/scoreboard.md`.
-7. Optional: onboarding agent (auto-mapping new log formats from samples, validated in code, once per vendor —
-   user liked the idea, do after correlation); (narrator + mapping suggestions now use Gemini `gemini-3.8-flash` via `GEMINI_API_KEY`; hackathon rerun with narration: put the key in `~/.gemini_key` on the big box, run `~/work/after/eval/narrate_firex.sh`); ChopChopGo / Wazuh for Linux.
+1. Recall checks: independent SQL hunts for attacks the engine missed.
+2. Behaviour baselines per account from the knowledge base (hours, countries, admin actions).
+3. A systemd service around `engine.kb watch` with alerts on new / grown incidents.
+4. Decoy accounts and keys; logging-tamper alerts beyond the firewall.
+5. Peak memory on the 10G file is 7.96 GB: trim before the 15 GB scale run.
+6. Rerun the blind set with the final code; Linux detection is still the weakest area.
 
 ## 7. Gotchas learned the hard way
 
-- **Shell escaping:** backslashes in heredocs / `python -c` get mangled (`\b` became a backspace, `\x00` a NUL byte in a
-  source file). Write scripts/tests to files with the Write/Edit tools; after patching, `grep -cP "[\x00-\x08]"` and
-  check for NUL bytes with Python.
-- **`pkill -f <pattern>`** over ssh matched the ssh command line itself and killed the session. Use
-  `for p in $(pgrep -f "exact engine.run args"); do kill $p; done` with a pattern that can't match the shell.
-- **Never edit a script that a running `bash` is executing** (bench.sh mid-run → broken summary).
-- **Background waits:** a `until grep -q DONE log` can see the previous round's marker — remove the log first or check
-  the summary timestamp.
+- Shell escaping: backslashes in heredocs / `python -c` get mangled. Write scripts to files and run them.
+- `pkill -f <pattern>` over ssh can match the ssh command line itself and kill the session; use a pattern that
+  cannot match the shell (e.g. `python -m [e]ngine`).
+- Never edit a script that a running `bash` is executing.
+- Background waits can see the previous round's marker: remove the log first.
 - AWS is Python 3.11: no backslashes inside f-string expressions.
-- Profiling with `python -m cProfile -m engine.run` slows the forked ingest workers badly: profile with `--skip-ingest`.
-- Installing external code (git clone + pip, binary downloads) may be blocked by the permission checker → give the user a
-  one-line `! ssh ...` command, or a script uploaded to the box that they run.
-- Commits are GPG-signed; the passphrase prompt can time out (ask the user, never bypass signing).
-- The GCP #1 key (`gcp-vm.pem`) was printed into a session by accident → **rotation pending** (user decision).
+- Profile with `--skip-ingest` (cProfile slows the forked ingest workers).
+- LLM providers: Gemini Flash models returned 503 "high demand" for long stretches; Groq's on-demand tier allows
+  8,000 tokens per minute (run batches one after another). The engine falls back to the next model and finally to
+  the template report, so a run never stalls on the LLM.

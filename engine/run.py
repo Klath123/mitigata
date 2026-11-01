@@ -15,7 +15,7 @@ import psutil
 
 from .attack import navigator
 from .cluster.score import (REPORT, REVIEW, blast_radius, build_hops, build_path, build_steps, excluded_lookalikes,
-                            iso, score)
+                            iso, score, step_stages)
 from .entities.resolve import IpResolver, build_hosts, build_ip_map
 from .graph.build import Linker, components, load_nodes, to_networkx
 from .graph.confidence import POSSIBLE, SOLID, noisy_or
@@ -28,7 +28,7 @@ from .ingest.to_parquet import ingest
 from .lookahead import privmap
 from .lookahead.reach import build_graph as build_reach_graph, look_ahead
 import networkx as nx
-from . import quality
+from . import kb as knowledge, quality, verify_agent
 from . import validate as chain_checks
 from .narrate import guard, report
 from .results import manifest, store
@@ -101,7 +101,8 @@ def key_entities(sub: nx.Graph, nodes) -> dict:
     return out
 
 
-def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None) -> tuple[list[dict], list[dict], dict]:
+def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None, cache: dict | None = None,
+                    batch_start: int | None = None) -> tuple[list[dict], list[dict], dict]:
     resolver = IpResolver(con)
     hosts_info = build_hosts(con)
     nodes = load_nodes(con, resolver)
@@ -125,7 +126,9 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
     for comp in comps:
         ns = [nodes[k] for k in comp]
         steps = build_steps(ns)
-        S, br = score(ns, [s["stage"] for s in steps], crit)
+        S, br = score(ns, step_stages(steps), crit)
+        if len(steps) < 2 and S >= REPORT:   # one event with two labels is one action: review it, never "attack"
+            S, br = REPORT - 0.01, {**br, "single_event": True}
         scored.append((S, br, comp, steps))
     scored.sort(key=lambda x: -x[0])
     member_of = {}
@@ -147,12 +150,14 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
         inc = {"incident_id": cid, "risk": S, "verdict": "attack" if S >= REPORT else "review",
                "score_breakdown": br, "alerts_merged": sum(n.rows_total for n in ns),
                "hits_merged": len(ns),
-               "stages": list(dict.fromkeys(s["stage"] for s in steps)),
+               "stages": list(dict.fromkeys(step_stages(steps))),
                "first_seen": steps[0]["time"] if steps else "", "last_seen": steps[-1]["time"] if steps else "",
                "path": path, "hops": [{k: v for k, v in h.items() if k != "ts"} for h in hops],
                "report_url": f"/incidents/{cid}/report"}
         # gaps
         lo, hi = steps[0]["ts"], steps[-1]["ts"]
+        if batch_start is not None:          # steps carried from earlier batches: their events are not in this one,
+            lo = max(lo, batch_start)        # so a gap search there would report every earlier hour as missing
         gaps = find_gaps(con, sorted({s["host"] for s in steps if s["host"]}), lo, hi, rates)
         inc["gaps"] = [{"host": g["host"], "start": iso(g["start_ts"]), "end": iso(g["end_ts"]),
                         "expected_events": g["expected_events"], "crosses_edges": []} for g in gaps]
@@ -225,7 +230,7 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
         inc["resolved_hosts"] = {ip: h for s in steps for r in s["_rows"]
                                  for ip, h in ((r.get("src_ip"), r.get("src_h")), (r.get("dst_ip"), r.get("dst_h")))
                                  if ip and h and h != ip}
-        report.write(inc, steps, use_llm)       # verdict is set above: S >= REPORT is 'attack'
+        report.write(inc, steps, use_llm, cache)       # verdict is set above: S >= REPORT is 'attack'
         inc["steps"] = [_strip(s) for s in steps]
         inc["navigator_layer"] = navigator.layer(inc)
         (incidents if inc["verdict"] == "attack" else review).append(inc)
@@ -237,8 +242,12 @@ def build_incidents(con, log=print, use_llm: bool = True, q: dict | None = None)
 
 
 def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB", use_llm: bool = True,
-        skip_ingest: bool = False, log=print, hash_full: bool = False) -> dict:
+        skip_ingest: bool = False, log=print, hash_full: bool = False, kb: str | None = None,
+        auto_apply: bool = False) -> dict:
     os.makedirs(out, exist_ok=True)
+    batch = os.path.basename(os.path.abspath(out))
+    cache = knowledge.llm_cache(kb)          # reports / reviews of unchanged KB incidents (read before attaching)
+    continuing = knowledge.earlier_batches(kb, batch) > 0
     stages = {}
     t_all = time.time()
     with PeakMemory() as pm:
@@ -262,9 +271,11 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
         if os.path.exists(db_path):
             os.remove(db_path)
         con = connect(out, memory_limit=memory)
+        if kb:
+            knowledge.attach(con, kb)
         n_dup = dedup_events(con)
         log(f"  {n_dup:,} identical duplicate records left out of detection (kept in events_all)")
-        dvars = set_dataset_vars(con)
+        dvars = set_dataset_vars(con, continuing=continuing)
         n_ip = build_ip_map(con)
         build_hosts(con)
         load_macros(con)
@@ -292,14 +303,22 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
         stages["detection"] = round(time.time() - t, 2)
         n_hits = con.execute("SELECT count(*) FROM hits").fetchone()[0]
         log(f"  {n_hits} hit rows from {len(rule_stats)} rules")
+        carried = knowledge.carry_in(con, batch, log=log) if kb else 0
+        if kb and continuing:
+            rule_stats[knowledge.NEW_SOURCE_RULE] = {"hits": knowledge.history_hits(con, log=log), "source": "kb"}
 
         t = time.time()
         log("[4/6] correlate, trace, look-ahead, narrate")
-        incidents, review, counts, reach_g = build_incidents(con, log=log, use_llm=use_llm, q=q)
+        incidents, review, counts, reach_g = build_incidents(con, log=log, use_llm=use_llm, q=q, cache=cache,
+                                                             batch_start=dvars.get("ds_start") if carried else None)
+        counts["carried_hits"] = carried
         graph_info = graph_export.write(out, graph_export.build(incidents + review, reach_g))
         counts["export_graph"] = graph_info
         counts["evidence_indexed"] = store.write_evidence_index(con, out, incidents + review)
         log(f"  graph export: {graph_info['nodes']} nodes, {graph_info['edges']} relationships -> graph/")
+        if kb:
+            knowledge.fill_evidence(con, out, incidents + review)
+            knowledge.absorb(con, batch, log=log)
         stages["correlation_and_reports"] = round(time.time() - t, 2)
         con.close()
 
@@ -315,8 +334,12 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
     summary = {"dataset": stats["dataset"], "processed": stats["processed"]}
     log("[5/6] write results")
     store.write(out, summary, incidents, review, stats)
+    verify_agent.run_dir(out, use_llm, cache, log=log)
     log("  chain checks (engine/validate.py):")
     chain_checks.run_dir(out, log=log)
+    config_agent(out, use_llm, auto_apply, log)
+    if kb:
+        knowledge.merge(out, kb, log=log)
     man = manifest.write(out, dataset, t_all, time.time(), rep, stats, full_hash=hash_full)
     log(f"  run manifest: run {man['run_id'][:8]}, engine {str(man['engine']['git_commit'])[:8]}"
         f"{' +uncommitted changes' if man['engine']['uncommitted_changes'] else ''}, config {man['config']['sha256'][:12]}, "
@@ -329,6 +352,17 @@ def run(dataset: str, out: str, workers: int | None = None, memory: str = "6GB",
     return stats
 
 
+def config_agent(out: str, use_llm: bool, auto_apply: bool, log=print) -> None:
+    """New log formats in a batch: propose mappings, verify them (code + agent), optionally apply them for the next
+    batch (engine/ingest/suggest.py). Never fails the run: the batch's results are already written."""
+    from .ingest import suggest
+    try:
+        suggest.suggest(out, use_llm, path=os.path.join(out, "suggested.yaml"), auto=auto_apply,
+                        min_unknown=suggest.AGENT_MIN_UNKNOWN, log=lambda m: log(f"  config agent: {m}"))
+    except Exception as ex:
+        log(f"  config agent: {type(ex).__name__}: {str(ex)[:200]}, skipped")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("dataset")
@@ -338,10 +372,14 @@ def main(argv=None):
     p.add_argument("--no-llm", action="store_true")
     p.add_argument("--skip-ingest", action="store_true", help="reuse existing Parquet in --out")
     p.add_argument("--hash-full", action="store_true", help="full SHA-256 of every input file in run_manifest.json")
+    p.add_argument("--kb", metavar="DIR", help="knowledge base folder: carry in earlier batches, merge this one")
+    p.add_argument("--auto-apply", action="store_true",
+                   help="config agent: apply verified mappings for new log formats from the next batch on")
     p.add_argument("--serve", nargs="?", const=8000, type=int, metavar="PORT",
                    help="after the run, serve its results + the UI (default port 8000)")
     a = p.parse_args(argv)
-    run(a.dataset, a.out, a.workers, a.memory, not a.no_llm, a.skip_ingest, hash_full=a.hash_full)
+    run(a.dataset, a.out, a.workers, a.memory, not a.no_llm, a.skip_ingest, hash_full=a.hash_full, kb=a.kb,
+        auto_apply=a.auto_apply)
     if a.serve:
         import subprocess, sys
         subprocess.run([sys.executable, "-m", "engine.api", a.out, "--port", str(a.serve)])

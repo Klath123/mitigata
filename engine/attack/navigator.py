@@ -7,8 +7,12 @@ from . import stix
 def layer(incident: dict) -> dict:
     counts: dict[str, dict] = {}
     for s in incident.get("steps", []):
-        for tid in filter(None, [s.get("sub_technique") or s.get("technique")]):
-            c = counts.setdefault(tid, {"n": 0, "stage": s.get("stage"), "hosts": set()})
+        labels = [(s.get("sub_technique") or s.get("technique"), s.get("stage"))] + \
+                 [(a.get("sub_technique") or a.get("technique"), a.get("stage")) for a in s.get("also", [])]
+        for tid, stage in labels:
+            if not tid:
+                continue
+            c = counts.setdefault(tid, {"n": 0, "stage": stage, "hosts": set()})
             c["n"] += 1
             if s.get("host"):
                 c["hosts"].add(s["host"])

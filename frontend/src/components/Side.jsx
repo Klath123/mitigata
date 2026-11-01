@@ -33,7 +33,7 @@ export function IncidentList({ list, selected, onSelect, onHome }) {
 }
 
 /* ---------------------------------------------------------------- narrative + evidence drawer (right) */
-const SECTIONS = { summary: "Summary", timeline: "What happened", movement: "Movement", look_ahead: "Could reach next", gaps: "Logging gaps", impact: "Impact" };
+const SECTIONS = { summary: "Summary", why: "Why this is suspicious", timeline: "What happened", movement: "How they got in", look_ahead: "Could reach next", gaps: "Logging gaps", impact: "Impact", recommendations: "What to do", unknowns: "What we don't know yet" };
 const TIME = /^(\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2}) UTC: /;
 
 export function RightPanel({ report, focus, onEvidence, onClose, open: panelOpen, setOpen: setPanelOpen }) {

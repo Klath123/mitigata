@@ -1,0 +1,217 @@
+# ATT&CK labels for configuration / audit CHANGE events, any vendor (firewalls, network devices, cloud audit, hosts).
+#
+# One table, one meaning: the same kind of change always gets the same label, whichever device or rule reported it.
+# Used by the `config_change` detection (rules/detections/firewall.yaml) through engine/hunt/labels.py, and by the
+# chain check `label_matches_evidence` (engine/validate.py), which flags a step whose label disagrees with this table.
+#
+# Each entry:
+#   key        stable name of the change kind
+#   name       plain words (reports, UI)
+#   match      list of regexes over the lower-cased change text (message + action + target); ANY may match
+#   unless     optional regex that must NOT match
+#   technique  ATT&CK id (current, not revoked: tests/test_attack_labels.py checks it against MITRE's bundle)
+#   by_source  optional per-source override; source = event_type prefix: fw (firewall / network device), win, linux,
+#              cloud (IaaS / SaaS audit)
+#   stage      kill-chain stage in the engine's model (ATT&CK v18 "Stealth" / "Defense Impairment" = Defense Evasion);
+#              must be one of the technique's tactics (checked by the test)
+#   severity   0-1
+#   examples   change texts that must get this key (checked by the test), in real vendor wording
+#
+# FIRST MATCH WINS: specific entries come before general ones (logging back on before logging off, clearing history
+# before clearing logs, firewall objects before accounts). Regexes are RE2 (DuckDB): no lookarounds.
+
+labels:
+  - key: history_cleared
+    name: Command history cleared
+    match: ['(clear|delet|wip|purg)\w*\s.*(command history|cli history|bash_history|shell history)',
+            '(command history|cli history|bash_history)\s.*(clear|delet|wip|purg)']
+    technique: T1070.003
+    stage: Defense Evasion
+    severity: 0.8
+    examples: ["execute clear command history", "bash_history deleted by root"]
+
+  - key: logs_cleared
+    name: Logs cleared or deleted
+    match: ['(clear|wipe|purg|eras|truncat|delet)\w*\s.*\b(logs?|event ?logs?|audit ?logs?|log files?)\b',
+            '\b(logs?|log files?|event ?logs?)\b.*\b(cleared|purged|wiped|erased|truncated|deleted)\b',
+            'execute log delete']
+    unless: '(changed from|setting|log\.[a-z]|syslogd|fortianalyzer)'
+    technique: T1070
+    by_source: {win: T1685.005, linux: T1685.006}
+    stage: Defense Evasion
+    severity: 0.8
+    examples: ["Disk logs were purged", "execute log delete-all", "Event log cleared", "All log files were deleted"]
+
+  - key: logging_restored
+    name: Logging turned back on after being off (the gap stays, the setting looks normal again)
+    match: ['\b(log|logs|logging|syslog|syslogd|audit|auditd|fortianalyzer|faz|siem|trail|cloudtrail)\b.*from ''?(disable|disabled|off|false)''? to ''?(enable|enabled|on|true)''?',
+            '\b(startlogging|start ?logging|resume ?logging|enable ?logging)\b']
+    technique: T1070
+    stage: Defense Evasion
+    severity: 0.55
+    examples: ["Attribute 'status' of setting 'log disk setting' changed from 'disable' to 'enable'", "StartLogging"]
+
+  - key: logging_disabled
+    name: Logging switched off or a log destination removed
+    match: ['\b(log|logs|logging|syslog|syslogd|audit|auditd|fortianalyzer|faz|siem|trail|cloudtrail|log ?disk)\b.*(to ''?(disable|disabled|off|false)''?)',
+            '\b(disabl|stop|delet|remov|purg)\w*\s.*\b(logging|log setting|log disk|syslog|syslogd|fortianalyzer|faz|audit policy|auditd|cloudtrail|trail)\b',
+            '\b(logging|syslog|syslogd|fortianalyzer|faz|auditd|audit policy)\b.*\b(disabled|stopped|deleted|removed)\b',
+            '\b(stoplogging|deletetrail|updatetrail.*isLogging=false)\b']
+    technique: T1685
+    by_source: {win: T1685.001, linux: T1685.004, cloud: T1685.002}
+    stage: Defense Evasion
+    severity: 0.75
+    examples: ["Attribute 'status' of setting 'log disk setting' changed from 'enable' to 'disable'",
+               "Delete log.syslogd setting", "StopLogging", "auditd stopped"]
+
+  - key: security_feature_disabled
+    name: A security feature (antivirus, IPS, web filter, sandbox...) switched off or removed
+    match: ['\b(antivirus|av-profile|av profile|ips|ids|intrusion|ips-sensor|webfilter|web ?filter|application control|app-ctrl|dlp|edr|sandbox|utm|defender|sensor|ssl inspection|ssl-ssh-profile)\b.*\b(disabl\w*|delet\w*|remov\w*|bypass\w*|to ''?(disable|off)''?)',
+            '\b(disabl|delet|remov|bypass)\w*\s.*\b(antivirus|av-profile|ips|intrusion|webfilter|web ?filter|application control|dlp|edr|sandbox|defender|ssl inspection)\b']
+    technique: T1685
+    stage: Defense Evasion
+    severity: 0.75
+    examples: ["Delete antivirus.profile default", "Attribute 'ips-sensor' of setting 'firewall policy 3' changed from 'default' to 'disable'"]
+
+  - key: firewall_rules_removed
+    name: Firewall policies or rules removed or disabled
+    match: ['\b(firewall policy|firewall policies|firewall rule|security policy|security rule|access-list|access list|acl|firewall address)\b.*\b(purg\w*|delet\w*|remov\w*|flush\w*|disabl\w*|to ''?disable''?)',
+            '^(delete|purge)\s+firewall\.(policy|policy6|address|addrgrp|service|vip)',
+            '\b(purg|delet|remov|flush|disabl)\w*\s.*\b(firewall policy|firewall rule|security policy|security rule|access-list|acl)\b',
+            'objects of ''firewall']
+    technique: T1686
+    by_source: {fw: T1686.002, win: T1686.003, cloud: T1686.001}
+    stage: Defense Evasion
+    severity: 0.75
+    examples: ["Objects of 'firewall policy' were purged", "Delete firewall.policy 12", "access-list OUTSIDE removed"]
+
+  - key: management_access_opened
+    name: Management access opened on the device (admin ports, trusted hosts)
+    match: ['\b(allowaccess|trusthost\d*|admin-port|admin-sport|admin-https|admin-ssh|admintimeout|management access|admin access|telnet)\b.*\b(chang|set|add|edit|enabl)\w*']
+    technique: T1686
+    by_source: {fw: T1686.002}
+    stage: Defense Evasion
+    severity: 0.6
+    examples: ["Attribute 'allowaccess' of setting 'system.interface wan1' changed from 'ping' to 'ping https ssh'"]
+
+  - key: firewall_rules_changed
+    name: Firewall policy added or changed
+    match: ['\b(firewall policy|firewall rule|security policy|security rule|access-list|acl|firewall\.policy)\b.*\b(add\w*|creat\w*|edit\w*|chang\w*|modif\w*|configured|move\w*)\b',
+            '^(add|edit|move) firewall\.']
+    technique: T1686
+    by_source: {fw: T1686.002, win: T1686.003, cloud: T1686.001}
+    stage: Defense Evasion
+    severity: 0.45
+    examples: ["Edit firewall.policy 7", "Attribute 'action' of setting 'firewall policy 4' changed from 'deny' to 'accept'"]
+
+  - key: mfa_disabled
+    name: Multi-factor authentication weakened or removed
+    match: ['\b(mfa|2fa|two-factor|two factor|otp|fortitoken|token|authenticator)\b.*\b(disabl\w*|delet\w*|remov\w*|bypass\w*|to ''?(disable|none|off)''?)']
+    technique: T1556.006
+    stage: Defense Evasion
+    severity: 0.75
+    examples: ["Attribute 'two-factor' of setting 'system.admin rakes' changed from 'fortitoken' to 'disable'"]
+
+  - key: auth_changed
+    name: How the device checks logins was changed (RADIUS, LDAP, SAML, password policy)
+    match: ['\b(radius|ldap|saml|tacacs|authentication|auth-|password policy|password-policy|remote auth)\b.*\b(add\w*|delet\w*|remov\w*|chang\w*|edit\w*|disabl\w*|configured)\b',
+            '^(add|edit|delete)\s+(user\.(radius|ldap|saml|tacacs\+?|fortitoken|setting)|system\.password-policy)']
+    technique: T1556
+    by_source: {fw: T1556.004}
+    stage: Defense Evasion
+    severity: 0.6
+    examples: ["Edit user.radius corp-radius", "Attribute 'password-policy' of setting 'system.password-policy' changed from 'enable' to 'disable'"]
+
+  - key: ssh_key_added
+    name: SSH key added to an account
+    match: ['\b(ssh-public-key\d*|authorized_keys|ssh key|ssh public key)\b']
+    technique: T1098.004
+    stage: Persistence
+    severity: 0.7
+    examples: ["Attribute 'ssh-public-key1' of setting 'system.admin admin' changed"]
+
+  - key: account_created
+    name: Account created
+    match: ['^(add|create|new)\s+(system\.admin|user\.local|user\.group|admin|administrator|user|account)\b',
+            '\b(admin|administrator|user|account)\b\s+\S+\s+(was\s+)?(added|created)\b',
+            '\b(added|created)\s+(new\s+)?(admin|administrator|user|account)\b',
+            '\b(createuser|useradd|adduser)\b']
+    technique: T1136.001
+    by_source: {cloud: T1136.003}
+    stage: Persistence
+    severity: 0.75
+    examples: ["Add system.admin svc_backup30", "CreateUser", "useradd backup", "Administrator svc2 was added"]
+
+  - key: account_deleted
+    name: Account deleted
+    # context decides the meaning (engine/hunt/labels.py, config_change rule): an account deleted soon after it was
+    # created is the attacker removing their backdoor (Indicator Removal); deleting an existing account locks its
+    # owner out (Account Access Removal, Impact)
+    match: ['^(delete|remove)\s+(system\.admin|user\.local|admin|administrator|user|account)\b',
+            '\b(admin|administrator|user|account)\b\s+\S+\s+(was\s+)?(deleted|removed)\b',
+            '\b(deleteuser|userdel|deluser)\b']
+    technique: T1531
+    stage: Impact
+    severity: 0.7
+    recently_created: {technique: T1070, stage: Defense Evasion, severity: 0.75,
+                       name: "Account deleted soon after it was created (backdoor removed after use)"}
+    examples: ["Delete system.admin svc_backup30", "DeleteUser", "userdel olduser"]
+
+  - key: privilege_changed
+    name: Account privileges or admin profile changed
+    match: ['\b(accprofile|admin profile|super_admin|prof_admin|privilege|role|admin group|vdom)\b.*\b(add\w*|chang\w*|edit\w*|grant\w*|assign\w*|set)\b',
+            '\b(attachuserpolicy|addusertogroup|putuserpolicy)\b']
+    technique: T1098
+    stage: Persistence
+    severity: 0.6
+    examples: ["Attribute 'accprofile' of setting 'system.admin svc1' changed from 'prof_admin' to 'super_admin'", "AttachUserPolicy"]
+
+  - key: account_changed
+    name: Admin account settings or password changed
+    match: ['^edit\s+(system\.admin|user\.local)\b', '\b(password|passwd|secret)\b.*\b(chang\w*|set|reset\w*|edit\w*|modif\w*)\b']
+    technique: T1098
+    stage: Persistence
+    severity: 0.55
+    examples: ["Edit system.admin rakes", "Admin password changed for tejas.roy"]
+
+  - key: remote_access_changed
+    name: VPN / remote access configuration changed
+    match: ['\b(vpn|ssl-vpn|sslvpn|ipsec|portal|vpn\.ssl|phase1|phase2)\b.*\b(add\w*|creat\w*|edit\w*|chang\w*|configured)\b',
+            '^(add|edit|delete)\s+vpn\.']
+    technique: T1133
+    stage: Persistence
+    severity: 0.45
+    examples: ["Edit vpn.ssl.settings", "Add vpn.ipsec.phase1-interface partner"]
+
+  - key: config_exported
+    name: Device configuration backed up or downloaded
+    match: ['\b(backup|export|download|upload)\w*\b.*\b(config|configuration)\b', '\b(config|configuration)\b.*\b(backed up|exported|downloaded)\b']
+    technique: T1602.002
+    stage: Collection
+    severity: 0.6
+    examples: ["System configuration backed up by admin", "execute backup config tftp"]
+
+  - key: firmware_downgraded
+    name: Device firmware downgraded
+    match: ['\b(firmware|image|os)\b.*\bdowngrad\w*', '\bdowngrad\w*\b.*\b(firmware|image)\b']
+    technique: T1601.002
+    stage: Defense Evasion
+    severity: 0.7
+    examples: ["Firmware downgraded from v7.4.3 to v6.4.1"]
+
+  - key: firmware_changed
+    name: Device firmware or system image changed
+    match: ['\b(firmware|system image|os image)\b.*\b(upgrad\w*|install\w*|restor\w*|chang\w*|replac\w*)\b']
+    technique: T1601
+    stage: Defense Evasion
+    severity: 0.5
+    examples: ["Firmware upgraded to v7.4.4", "System image restored from USB"]
+
+  - key: automation_added
+    name: Scheduled task or automation added on the device
+    match: ['\b(auto-script|automation|stitch|schedule|scheduled task|cron|crontab)\b.*\b(add\w*|creat\w*|edit\w*|chang\w*)\b',
+            '^(add|edit)\s+system\.(auto-script|automation-\w+)']
+    technique: T1053
+    stage: Persistence
+    severity: 0.55
+    examples: ["Add system.auto-script backup-at-3am", "crontab edited for root"]

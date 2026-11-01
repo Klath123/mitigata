@@ -152,6 +152,8 @@ def load_macros(con: duckdb.DuckDBPyConnection, rules_dir: str = RULES_DIR) -> N
         lines = [ln for ln in stmt.splitlines() if not ln.strip().startswith("--")]
         if any(ln.strip() for ln in lines):
             con.execute("\n".join(lines))
+    from .labels import install as install_change_labels
+    install_change_labels(con)            # change_label() / change_labels: one ATT&CK table for change events
 
 
 def _sev(v) -> float:

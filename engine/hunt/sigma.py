@@ -188,7 +188,8 @@ def _selection(sel) -> str:
             return "(" + " OR ".join(_selection(x) for x in sel) + ")"
         # keyword list: search the text columns
         return "(" + " OR ".join(
-            f"lower(coalesce(e.cmdline,'') || ' ' || coalesce(e.message,'') || ' ' || coalesce(e.target,'')) "
+            f"lower(coalesce(e.cmdline,'') || ' ' || coalesce(e.cmdline_clean,'') || ' ' || coalesce(e.message,'') "
+            f"|| ' ' || coalesce(e.target,'')) "
             f"LIKE {_q('%' + _wild(str(k).lower()) + '%')} ESCAPE '\\'" for k in sel) + ")"
     if not isinstance(sel, dict):
         return "TRUE"
@@ -200,6 +201,10 @@ def _selection(sel) -> str:
         if not vals:
             continue
         sub = [_value_cond(col, numeric, v, mods) for v in vals]
+        if col == "e.cmdline":
+            # also match the de-obfuscated, decoded text (ingest/clean.py): p^o^w"e"rshell -enc ... still hits
+            sub = [f"({c} OR {_value_cond('e.cmdline_clean', False, v, mods)})" if v is not None else c
+                   for c, v in zip(sub, vals)]
         conds.append("(" + (" AND " if "all" in mods else " OR ").join(sub) + ")")
     return "(" + " AND ".join(conds or ["TRUE"]) + ")"
 

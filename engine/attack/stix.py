@@ -117,6 +117,52 @@ def table() -> dict[str, tuple[str, list[str]]]:
         return BUILTIN
 
 
+# ATT&CK v18 retired the Impair Defenses family into Defense Impairment; used when the bundle is not installed
+REVOKED_FALLBACK = {"T1562": "T1685", "T1562.001": "T1685", "T1562.002": "T1685.001", "T1562.004": "T1686",
+                    "T1562.007": "T1686.001", "T1562.008": "T1685.002", "T1562.012": "T1685.004",
+                    "T1562.013": "T1686.002", "T1070.001": "T1685.005", "T1070.002": "T1685.006"}
+
+
+@lru_cache(maxsize=1)
+def revoked() -> dict[str, str]:
+    """Retired technique id -> the id MITRE replaced it with (the bundle's revoked-by links, chains followed)."""
+    path = os.environ.get("ATTACK_STIX") or os.path.join(ROOT, "rules", "attack", "enterprise-attack.json")
+    out = dict(REVOKED_FALLBACK)
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                objs = json.load(f).get("objects", [])
+            ext = {o["id"]: next((r["external_id"] for r in o.get("external_references", [])
+                                  if r.get("source_name") == "mitre-attack"), None)
+                   for o in objs if o.get("type") == "attack-pattern"}
+            for o in objs:
+                if o.get("type") == "relationship" and o.get("relationship_type") == "revoked-by":
+                    a, b = ext.get(o["source_ref"]), ext.get(o["target_ref"])
+                    if a and b and a != b:
+                        out[a] = b
+        except Exception:
+            pass
+    for k in list(out):                   # follow chains: a -> b -> c becomes a -> c
+        seen = {k}
+        while out[k] in out and out[k] not in seen:
+            seen.add(out[k])
+            out[k] = out[out[k]]
+    return out
+
+
+def current(technique: str | None, sub_technique: str | None = None) -> tuple[str | None, str | None]:
+    """(technique, sub-technique) with retired ids replaced; keeps the sub-technique under its own parent."""
+    rv = revoked()
+    sub = rv.get(sub_technique, sub_technique) if sub_technique else None
+    tech = rv.get(technique, technique) if technique else None
+    if sub:
+        if "." in sub:
+            tech = sub.split(".")[0]
+        else:                             # the sub-technique was promoted to a technique of its own
+            tech, sub = sub, None
+    return tech, sub
+
+
 def name(tid: str | None) -> str | None:
     if not tid:
         return None

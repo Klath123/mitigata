@@ -3,26 +3,44 @@
 # owns the perimeter leaves behind. Vendor verdicts (IPS / AV / web / DNS filtering) become labelled hits; the
 # noise guard keeps routine verdicts from gluing incidents together.
 rules:
-  - id: fw_config_tamper
-    title: Network device configuration changed (logging disabled, policies deleted or purged)
-    technique: T1562
-    sub_technique: T1562.004
+  - id: config_change
+    # Every configuration / audit change from any device or cloud, labelled ONLY by rules/mappings/attack_labels.yaml
+    # (engine/hunt/labels.py): the same kind of change always gets the same current ATT&CK label. Changes the table
+    # does not know are not steps (they remain visible as context around incidents).
+    title: Configuration changed (logging, firewall rules, accounts, authentication, remote access...)
+    technique: T1685
     tactic: Defense Evasion
     severity: 0.4
     kind: known_bad
     requires: {event_types: [fw:config]}
     sql: |
-      SELECT e.*,
-        CASE WHEN regexp_matches(lc(coalesce(e.message, '')), '(log|logging|syslog|fortianalyzer|faz).*(disable|delet|purg|off)|disable.*(log|logging)')
-             THEN 'T1562.002'
-             ELSE 'T1562.004' END AS sub_technique,
-        CASE WHEN regexp_matches(lc(coalesce(e.message, '')), 'disable|delet|purg|remov|flush|reset') THEN 0.75
-             ELSE 0.4 END AS hit_severity
-      FROM events e
-      WHERE e.event_type = 'fw:config'
+      WITH c AS (
+        SELECT e.*,
+          change_label(lc(coalesce(e.message, '') || ' ' || coalesce(e.action, '') || ' ' || coalesce(e.target, ''))) AS k__,
+          change_source(e.event_type) AS src__,
+          lc(coalesce(e.target_user, regexp_extract(lc(coalesce(e.message, '')),
+             '(?:system\.admin|user\.local|administrator|admin|user|account)[ :=''"]+([a-z0-9_.@$-]+)', 1))) AS acct__
+        FROM events e
+        WHERE (e.event_type LIKE '%:config' OR e.event_type IN ('cloud:audit', 'audit:config'))),
+      created AS (SELECT acct__, host, min(ts) AS c_ts FROM c WHERE k__ = 'account_created' AND acct__ <> '' GROUP BY ALL),
+      k AS (
+        SELECT c.*,
+          -- an account deleted within a day of being created on the same device: the backdoor removed after use
+          CASE WHEN k__ = 'account_deleted' AND EXISTS (
+                 SELECT 1 FROM created x WHERE x.acct__ = c.acct__ AND x.host IS NOT DISTINCT FROM c.host
+                   AND x.c_ts <= c.ts AND c.ts - x.c_ts <= 86400000)
+               THEN 'account_deleted:recent' ELSE k__ END AS key__
+        FROM c WHERE k__ IS NOT NULL)
+      SELECT k.* EXCLUDE (k__, src__, acct__, key__),
+        l.technique, l.sub_technique, l.stage AS tactic, l.severity AS hit_severity
+      FROM k JOIN change_labels l ON l.key = k.key__ AND l.source IN (k.src__, '*')
+      QUALIFY row_number() OVER (PARTITION BY k.src_file, k.line ORDER BY l.source = '*') = 1
 
   - id: fw_admin_from_internet
+    # the ACCESS: the first action of an account from an internet address (its sign-in, or its first change when
+    # the sign-in was not logged). What it did afterwards is labelled by config_change, never counted again here.
     title: Administrative access to a network device from the internet side
+    first_only: true        # a "first time" hit: a later batch never adds a second first time (engine/kb.py)
     technique: T1078
     tactic: Initial Access
     severity: 0.45
@@ -43,6 +61,7 @@ rules:
         CASE WHEN a.ts = firsts.f__ AND (a.ts > getvariable('warmup_end') OR getvariable('warmup_end') > getvariable('ds_end'))
              THEN 0.75 ELSE 0.5 END AS hit_severity
       FROM a JOIN firsts USING ("user", ctry__)
+      QUALIFY row_number() OVER (PARTITION BY a."user", a.src_ip ORDER BY a.ts, a.src_file, a.line) = 1
 
   - id: fw_account_geo_jump
     title: Same account logged in from two countries within an hour (impossible travel / shared credentials)

@@ -64,13 +64,42 @@ def test_firewall_rules_fire():
     for k, v in (("ds_start", 0), ("ds_end", 1), ("warmup_end", 2)):           # short dataset: no warm-up
         con.execute(f"SET VARIABLE {k} = {v}")
     load_macros(con)
-    rules = [r for r in load_rules() if r["id"].startswith("fw_")]
+    rules = [r for r in load_rules() if r["id"].startswith("fw_") or r["id"] == "config_change"]
     st = run_rules(con, rules, log=lambda *_: None)
-    assert st["fw_config_tamper"]["hits"] == 1
-    assert con.execute("SELECT sub_technique, severity FROM hits WHERE rule_id = 'fw_config_tamper'").fetchone() \
-        == ("T1562.002", 0.75)                                                  # logging disabled
-    assert st["fw_admin_from_internet"]["hits"] == 3
+    assert st["config_change"]["hits"] == 1
+    assert con.execute("SELECT technique, sub_technique, tactic, severity FROM hits WHERE rule_id = 'config_change'"
+                       ).fetchone() == ("T1685", None, "Defense Evasion", 0.75)    # logging disabled (Disable or Modify Tools)
+    assert st["fw_admin_from_internet"]["hits"] == 3                            # one access per account + address
     assert st["fw_account_geo_jump"]["hits"] == 2                               # Russia then Türkiye in 10 min
+
+
+def test_config_changes_get_the_label_of_what_they_did():
+    """Labels come from rules/mappings/attack_labels.yaml (current ATT&CK): what the change DID, not who reported it."""
+    msgs = {"log_off": "Attribute 'status' of setting 'log disk setting' changed from 'enable' to 'disable'",
+            "log_on": "Attribute 'status' of setting 'log disk setting' changed from 'disable' to 'enable'",
+            "purge": "Objects of 'firewall policy' were purged",
+            "add": "Add system.admin svc_backup30", "delete": "Delete system.admin svc_backup30"}
+    lines = [LINES["config"].replace(LINES["config"].split("msg=")[1], '"' + m.replace('"', "") + '"')
+             for m in msgs.values()]
+    rows = _rows(lines)
+    for i, r in enumerate(rows, 1):
+        r.update(src_file="fw.log", line=i)
+    con = duckdb.connect()
+    con.register("t", pa.Table.from_pylist([{f: r.get(f) for f in FIELD_NAMES} for r in rows], schema=EVENT_SCHEMA))
+    con.execute("CREATE TABLE events AS SELECT * FROM t")
+    con.execute("CREATE TABLE ip_segments (ip VARCHAR, host VARCHAR, valid_from BIGINT, valid_to BIGINT, seg_no INT)")
+    con.execute("CREATE TABLE hosts (host VARCHAR, role VARCHAR)")
+    for k, v in (("ds_start", 0), ("ds_end", 1), ("warmup_end", 2)):
+        con.execute(f"SET VARIABLE {k} = {v}")
+    load_macros(con)
+    run_rules(con, [r for r in load_rules() if r["id"] == "config_change"], log=lambda *_: None)
+    got = {line: (t, sub, tac) for line, t, sub, tac in con.execute(
+        "SELECT line, technique, sub_technique, tactic FROM hits ORDER BY line").fetchall()}
+    assert got == {1: ("T1685", None, "Defense Evasion"),            # logging off: disable or modify tools
+                   2: ("T1070", None, "Defense Evasion"),            # logging back on: covering tracks
+                   3: ("T1686", "T1686.002", "Defense Evasion"),     # firewall policies purged: network device firewall
+                   4: ("T1136", "T1136.001", "Persistence"),         # admin account created
+                   5: ("T1070", None, "Defense Evasion")}            # admin account deleted after use
 
 
 def test_service_image_matches_the_process_start():

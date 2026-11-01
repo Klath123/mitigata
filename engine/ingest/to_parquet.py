@@ -24,6 +24,7 @@ from ..schema import EVENT_SCHEMA, FIELD_NAMES, RAW_MAX
 from .mapper import DEFAULT_FIELDS, Mapper, TimeParser
 from .discover import discover
 from .parsers import PARSERS, SPLITTABLE, iter_evtx, parse_line_any
+from .lines import bounded_lines, skip_line
 from .sniff import read_sample, sniff, year_hint
 
 BATCH = 50_000
@@ -82,7 +83,7 @@ def _boundaries(path: str, size: int, chunk: int) -> list[int]:
         pos = chunk
         while pos < size:
             f.seek(pos)
-            f.readline()
+            skip_line(f)
             b = f.tell()
             if b >= size:
                 break
@@ -134,14 +135,15 @@ def _iter_lines(path: str, start: int, end: int, base_line: int, binary: dict | 
     with open(path, "rb") as f:
         f.seek(start)
         pos, n = start, base_line
-        for raw in f:
+        for raw, size in bounded_lines(f):
             if pos >= end:
                 break
             n += 1
-            if binary is not None and is_binary(raw):
-                binary["lines"] += 1
-                binary["bytes"] += len(raw)
-                pos += len(raw)
+            if raw is None or (binary is not None and is_binary(raw)):   # over-long line or binary junk
+                if binary is not None:
+                    binary["lines"] += 1
+                    binary["bytes"] += size
+                pos += size
                 continue
             text = raw.decode("utf-8", "replace").rstrip("\r\n")
             if pos == 0 and text.startswith("﻿"):

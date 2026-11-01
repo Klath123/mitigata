@@ -14,6 +14,7 @@ import sys
 from collections import defaultdict
 
 from .attack import stix
+from .hunt import labels
 from .narrate import checker
 from .schema import TACTIC_INDEX
 
@@ -101,8 +102,32 @@ def check_incident(inc: dict, evidence: dict) -> dict:
                   "these steps only re-use log lines of another step (one event counted as two steps)" if dup
                   else "every step has log lines of its own", dup))
 
+    # labels: a step's own change events, re-labelled from the shared table (rules/mappings/attack_labels.yaml), must
+    # agree with the step. T1078 is about WHO / FROM WHERE, not what was changed, so it fits any change.
+    wrong = []
+    for s in steps:
+        mine = {s["technique"]} | {a["technique"] for a in s.get("also", [])}
+        if "T1078" in mine:
+            continue
+        for r in step_rows(s, evidence, resolved):
+            et = str(r.get("event_type") or "")
+            if not (et.endswith(":config") or et in ("cloud:audit", "audit:config")):
+                continue
+            key = labels.key_of(labels.text_of(r))
+            if not key:
+                continue
+            src = labels.source_of(et)
+            ok = {labels.resolve(key, src)["technique"], labels.resolve(key, src, recently_created=True)["technique"]}
+            if not ok & mine:
+                wrong.append((s["order"], labels.resolve(key, src)["name"], sorted(ok)))
+                break
+    out.append(_c("label_matches_evidence", "warn" if wrong else "pass",
+                  f"step {wrong[0][0]}'s log line is '{wrong[0][1]}' ({'/'.join(wrong[0][2])}) in the label table, "
+                  f"not what the step says" if wrong else "every change step carries the label its log lines get "
+                  "from the shared ATT&CK table", [w[0] for w in wrong]))
+
     if inc.get("verdict") == "attack":
-        n_st = len({s["stage"] for s in steps})
+        n_st = len({st for s in steps for st in [s["stage"]] + [a["stage"] for a in s.get("also", [])]})
         ok = len(steps) >= 2 and n_st >= 2
         out.append(_c("verdict_rules", "pass" if ok else "fail",
                       f"attack verdict with {len(steps)} steps over {n_st} stages"
@@ -116,6 +141,15 @@ def check_incident(inc: dict, evidence: dict) -> dict:
                   f"{len(bad)} of {len(sents)} report sentences fail a re-check, e.g. \"{bad[0][0]}...\": {bad[0][1]}"
                   if bad else f"all {len(sents)} report sentences re-checked against the raw events"
                   + (f" (written by {inc.get('report_source')})" if inc.get("report_source") else "")))
+
+    rv = inc.get("agent_review")
+    if rv:                                 # engine/verify_agent.py: advisory second opinion, already code-checked
+        high = [i for i in rv["issues"] if i["severity"] == "high"]
+        bad = rv["verdict"] == "disagree" or bool(high)
+        out.append(_c("agent_review", "warn" if bad else "pass",
+                      f"verification agent ({rv.get('model')}): {rv['verdict']}, false-positive likelihood "
+                      f"{rv['false_positive_likelihood']}" + (f"; {high[0]['text'][:160]}" if high else ""),
+                      sorted({i["step"] for i in high if i["step"]})))
 
     worst = max((c["status"] for c in out), key=RANK.get, default="pass")
     return {"status": worst, **{k: sum(c["status"] == k for c in out) for k in RANK}, "checks": out}

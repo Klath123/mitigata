@@ -31,6 +31,15 @@ def is_local(ip: str | None) -> bool:
     return bool(ip) and (ip.startswith("127.") or ip in LOCAL_IPS)
 
 
+NETWORK_DEVICE = re.compile(r"^(FGT?\d|FW[-_]|PA-\d|ASA\d|SRX\d)", re.I)
+
+
+def is_network_device(name: str | None) -> bool:
+    """A firewall / VPN gateway by its name (FortiGate serials FGT60F..., FW-*, PA-*, ASA*, SRX*): the organisation's
+    own protection, never something to isolate or switch off."""
+    return bool(name) and bool(NETWORK_DEVICE.match(str(name)))
+
+
 def is_external(ip: str | None) -> bool:
     return bool(ip) and not is_internal(ip) and not is_local(ip)
 

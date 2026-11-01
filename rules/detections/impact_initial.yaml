@@ -34,8 +34,8 @@ rules:
 
   - id: log_cleared
     title: Event log cleared
-    technique: T1070
-    sub_technique: T1070.001
+    technique: T1685                 # ATT&CK v18: Clear Windows Event Logs moved from T1070.001 to T1685.005
+    sub_technique: T1685.005
     tactic: Defense Evasion
     severity: high
     kind: known_bad

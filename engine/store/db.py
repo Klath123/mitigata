@@ -25,6 +25,13 @@ def connect(run_dir: str, memory_limit: str = "6GB", threads: int | None = None,
         con.execute(f"SET threads={int(threads)}")
     glob = os.path.join(run_dir, "events", "*.parquet").replace(os.sep, "/")
     con.execute(f"CREATE OR REPLACE VIEW events_all AS SELECT * FROM read_parquet('{glob}')")
+    try:                                   # Parquet written before cmdline_clean existed: rules still reference it
+        cols = {c[0] for c in con.execute("DESCRIBE events_all").fetchall()}
+        if cols and "cmdline_clean" not in cols:
+            con.execute(f"CREATE OR REPLACE VIEW events_all AS SELECT *, NULL::VARCHAR AS cmdline_clean "
+                        f"FROM read_parquet('{glob}')")
+    except duckdb.Error:                   # no Parquet yet
+        pass
     # detection runs only on records that can be placed on a timeline; the rest are reported, not hidden
     con.execute(f"CREATE OR REPLACE VIEW events AS SELECT * FROM events_all "
                 f"WHERE ts BETWEEN {TS_MIN} AND epoch_ms(now()::TIMESTAMP) + {2 * 86_400_000}")
@@ -40,12 +47,16 @@ def dedup_events(con: duckdb.DuckDBPyConnection) -> int:
     return before - con.execute("SELECT count(*) FROM events").fetchone()[0]
 
 
-def set_dataset_vars(con: duckdb.DuckDBPyConnection, warmup_frac: float = 0.2, min_warmup_h: float = 12) -> dict:
-    """Dataset time bounds and the warm-up horizon used by first-seen (rarity) rules."""
+def set_dataset_vars(con: duckdb.DuckDBPyConnection, warmup_frac: float = 0.2, min_warmup_h: float = 12,
+                     continuing: bool = False) -> dict:
+    """Dataset time bounds and the warm-up horizon used by first-seen (rarity) rules.
+    continuing: a later batch of a stream (engine/kb.py). Its first hours are not a warm-up: treating them as
+    "normal" would hide an attack that continues into this batch, so warm-up baselining and per-batch first-seen
+    rules are off (warmup_end past the end, as for a short dataset)."""
     lo, hi = con.execute("SELECT min(ts), max(ts) FROM events WHERE ts IS NOT NULL").fetchone()
     lo, hi = lo or 0, hi or 0
     span = max(hi - lo, 1)
-    if span < 6 * 3_600_000:
+    if continuing or span < 6 * 3_600_000:
         # too little history to call anything "first-seen": rarity rules stay silent
         warm = hi + 1
     else:

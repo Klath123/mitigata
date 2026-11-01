@@ -42,7 +42,13 @@ def load(dataset: str, run: str):
 
 
 def parent(t: str | None) -> str | None:
-    return t.split(".")[0] if t else None
+    """Parent technique in CURRENT ATT&CK: ground truth written with retired ids (T1562.001, T1070.001) compares equal
+    to the engine's current ones (T1685, T1685.005)."""
+    if not t:
+        return None
+    from engine.attack import stix
+    tech, sub = stix.current(t.split(".")[0], t if "." in t else None)
+    return tech
 
 
 def score(gt: dict, incidents: list[dict], stats: dict) -> dict:

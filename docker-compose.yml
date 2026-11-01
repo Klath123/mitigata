@@ -1,0 +1,18 @@
+# docker compose up --build                      UI + API on http://localhost:8000 (upload logs from the UI)
+# docker compose run --rm attackstory python -m engine.run /logs --out results/mylogs   analyse ./logs from the host
+# docker compose run --rm attackstory python -m engine.hunt.fetch_sigma                 fetch SigmaHQ rules (kept in ./rules)
+services:
+  attackstory:
+    build: .
+    image: attackstory:latest
+    ports:
+      - "127.0.0.1:8000:8000"          # this machine only: the API can run analyses on uploaded files
+    environment:                       # optional LLM keys, read from your shell or a .env file next to this one
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - ATTACKSTORY_LLM=${ATTACKSTORY_LLM:-1}
+    volumes:
+      - ./results:/app/results         # runs (the demo runs in the submission archive show up straight away)
+      - ./data:/app/data               # uploaded logs
+      - ./rules:/app/rules             # detection rules, SigmaHQ and the ATT&CK bundle persist here
+      - ./logs:/logs:ro                # put your own logs in ./logs to analyse them from the command line

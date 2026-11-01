@@ -1,6 +1,6 @@
 """Export the run as one property graph: GraphML (Gephi / yEd / NetworkX) and Neo4j CSV + load.cypher.
 
-Nodes: Incident, Step, Host, Account, ExternalIP, Indicator
+Nodes: Incident, Step, Host, Account, ExternalIP, Technique, Indicator
 Relationships:
   (Incident)-[:HAS_STEP]->(Step)          (Step)-[:NEXT]->(Step)            (Step)-[:LINKED {confidence}]->(Step)
   (Step)-[:ON_HOST]->(Host)               (Step)-[:BY_ACCOUNT]->(Account)   (Host)-[:LOGON {user,time}]->(Host)
@@ -13,6 +13,7 @@ The engine never needs Neo4j; this is for analysts and demos (docker compose --p
 from __future__ import annotations
 
 import csv
+import json
 import os
 
 import networkx as nx
@@ -49,6 +50,13 @@ def build(incidents: list[dict], reach_g: nx.DiGraph | None) -> nx.MultiDiGraph:
             if s.get("user"):
                 node(f"account:{s['user']}", "Account", name=s["user"])
                 g.add_edge(sid, f"account:{s['user']}", type="BY_ACCOUNT")
+            # ATT&CK techniques as shared nodes: incidents that used the same technique meet there
+            for lab in [s] + s.get("also", []):
+                tid = lab.get("sub_technique") or lab.get("technique")
+                if tid:
+                    node(f"technique:{tid}", "Technique", name=f"{tid} {lab.get('technique_name') or ''}".strip(),
+                         technique=tid, stage=lab.get("stage", ""))
+                    g.add_edge(sid, f"technique:{tid}", type="USES")
             if prev:
                 g.add_edge(prev, sid, type="NEXT")
             prev = sid
@@ -64,6 +72,10 @@ def build(incidents: list[dict], reach_g: nx.DiGraph | None) -> nx.MultiDiGraph:
             node(f"host:{h['to']}", "Host", name=h["to"])
             g.add_edge(src, f"host:{h['to']}", type="LOGON", user=h.get("user") or "", time=h["time"],
                        evidence=h["evidence"], incident=iid)
+        # internet addresses the incident's activity came from or went to (firewall-only data has no logon hops)
+        for ip in (inc.get("blast_radius") or {}).get("confirmed", {}).get("external_ips", []):
+            node(f"ip:{ip}", "ExternalIP", name=ip)
+            g.add_edge(inode, f"ip:{ip}", type="INVOLVES_ADDRESS")
         for ind in inc.get("indicators", []):
             nid = f"ioc:{ind['type']}:{ind['value']}"
             node(nid, "Indicator", name=str(ind["value"])[:200], kind=ind["type"])
@@ -101,6 +113,10 @@ def write(run_dir: str, g: nx.MultiDiGraph) -> dict:
     for a, b, d in g.edges(data=True):
         gg.add_edge(a, b, **{k: _clean(v) for k, v in d.items()})
     nx.write_graphml(gg, os.path.join(out, "attackstory.graphml"))
+    # the same graph for the UI (GET /graph): plain nodes + edges
+    with open(os.path.join(out, "graph.json"), "w", encoding="utf-8") as f:
+        json.dump({"nodes": [{"id": n, **d} for n, d in gg.nodes(data=True)],
+                   "edges": [{"source": a, "target": b, **d} for a, b, d in gg.edges(data=True)]}, f, default=str)
 
     # Neo4j: one CSV per label / relationship type (LOAD CSV needs static labels without APOC)
     by_label: dict[str, list] = {}

@@ -30,7 +30,7 @@ export default function Cy({ elements, style, layout, onTap, height = 540, legen
   const png = () => {
     const a = document.createElement("a");
     a.href = cyRef.current.png({ full: true, scale: 2, bg: getComputedStyle(box.current).backgroundColor });
-    a.download = "attackstory-graph.png";
+    a.download = "attack-graph.png";
     a.click();
   };
 

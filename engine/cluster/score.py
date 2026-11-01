@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from ..attack import stix
 from ..attack.killchain import choose_stage, order_score
-from ..entities.resolve import is_external, is_internal, is_system_account
+from ..entities.resolve import is_external, is_internal, is_network_device, is_system_account
 from ..graph.build import Node
 from ..schema import TACTIC_INDEX
 
@@ -79,7 +79,8 @@ def _summary(n: Node, rows: list[dict]) -> str:
     bits = [n.title]
     detail = r.get("cmdline") or r.get("target") or r.get("message")
     if r.get("event_type") in ("win:4624", "auth:success") and r.get("src_ip"):
-        detail = f"logon type {r.get('logon_type')} from {r.get('src_h') or r['src_ip']}"
+        lt = f"logon type {r['logon_type']} " if r.get("logon_type") is not None else "sign-in "
+        detail = f"{lt}from {r.get('src_h') or r['src_ip']}"
     if r.get("event_type") in ("net:flow", "zeek:conn"):
         total = sum(x.get("bytes_out") or 0 for x in rows)
         detail = f"{total / 2**20:.0f} MB to {r.get('dst_ip')}:{r.get('dst_port')}"
@@ -141,9 +142,66 @@ def build_steps(nodes: list[Node]) -> list[dict]:
             "label_source": {"sigma": "sigma", "vendor": "vendor", "behavioural": "behavioural"}.get(best.kind, "rule"),
             "rule": ", ".join(sorted({n.rule_id for n in s["_nodes"]})),
             "summary": _summary(best, rows), "evidence": ev[:500],
-            "_rows": rows, "_nodes": [n.key for n in s["_nodes"]], "_src_ip": src_ip,
+            "_rows": rows, "_nodes": [n.key for n in s["_nodes"]], "_src_ip": src_ip, "_sev": best.severity,
+            "_best": best,
         })
+    return merge_same_evidence(out)
+
+
+def _label(s: dict) -> dict:
+    return {k: s.get(k) for k in ("technique", "sub_technique", "technique_name", "stage", "rule")}
+
+
+def _take_lines(big: dict, lines: set) -> None:
+    """Remove lines from a step and refresh what was derived from them (time, account, summary)."""
+    rows = [r for r in big["_rows"] if f"{r['src_file']}:{r['line']}" not in lines]
+    big["_rows"] = rows
+    big["evidence"] = [e for e in big["evidence"] if e not in lines]
+    big["ts"] = rows[0]["ts"]
+    big["time"] = iso(big["ts"])
+    big["user"] = _step_user(rows)
+    big["summary"] = _summary(big["_best"], rows)
+
+
+def merge_same_evidence(steps: list[dict]) -> list[dict]:
+    """One log line is one step.
+    1. A step whose lines all sit inside a bigger step owns them: the bigger step (a broad label grouped from
+       several hits, e.g. 'access from the internet') gives them up and keeps its own lines; its label is carried on
+       the smaller step in `also`.
+    2. Two steps on exactly the same lines become one step with the more severe label; the other goes in `also`.
+    The chain never counts one event twice, and every stage still counts for the score."""
+    for small in sorted(steps, key=lambda x: len(x["evidence"])):
+        ev = set(small["evidence"])
+        for big in steps:
+            if big is small or big["host"] != small["host"] or not ev or not ev < set(big["evidence"]):
+                continue
+            _take_lines(big, ev)
+            small.setdefault("also", []).append(_label(big))
+    out: list[dict] = []
+    for s in steps:
+        t = next((m for m in out if m["host"] == s["host"] and set(m["evidence"]) == set(s["evidence"])), None)
+        if t is None:
+            out.append(s)
+            continue
+        main, other = (s, t) if (s["_sev"], TACTIC_INDEX.get(s["stage"], 0)) > \
+            (t["_sev"], TACTIC_INDEX.get(t["stage"], 0)) else (t, s)
+        main.setdefault("also", []).extend([_label(other)] + other.get("also", []))
+        main["_nodes"] = main["_nodes"] + [k for k in other["_nodes"] if k not in main["_nodes"]]
+        main["rule"] = ", ".join(sorted(set(main["rule"].split(", ")) | set(other["rule"].split(", "))))
+        out[out.index(t)] = main
+    for s in out:                                  # a label never repeats on one step
+        seen = {(s["technique"], s.get("sub_technique"))}
+        s["also"] = [a for a in s.get("also", [])
+                     if (a["technique"], a.get("sub_technique")) not in seen and not seen.add((a["technique"], a.get("sub_technique")))]
+    out.sort(key=lambda s: (s["ts"], TACTIC_INDEX.get(s["stage"], 99), s["technique"]))   # times may have moved
+    for i, s in enumerate(out, 1):
+        s["order"] = i
     return out
+
+
+def step_stages(steps: list[dict]) -> list[str]:
+    """Every stage the steps show, including labels merged into a step (`also`), in step order."""
+    return [st for s in steps for st in [s["stage"]] + [a["stage"] for a in s.get("also", [])]]
 
 
 def build_hops(steps: list[dict]) -> list[dict]:
@@ -195,7 +253,7 @@ def build_path(steps: list[dict], hops: list[dict]) -> list[str]:
 
 
 def blast_radius(steps: list[dict], nodes: list[Node]) -> dict:
-    users, hosts, files, ext = set(), set(), set(), set()
+    users, hosts, files, ext, devices = set(), set(), set(), set(), set()
     for s in steps:
         for r in s["_rows"]:
             if r.get("user") and not is_system_account(r["user"]):
@@ -204,14 +262,18 @@ def blast_radius(steps: list[dict], nodes: list[Node]) -> dict:
                 users.add(r["target_user"])
             if r.get("host"):
                 hosts.add(r["host"])
+            if r.get("reporter"):                 # the device that logged traffic: a firewall/sensor
+                devices.add(r["reporter"])
             t = r.get("target") or ""
             if r.get("event_type") in ("win:5140", "win:5145", "sysmon:11", "audit:write", "audit:read") and t:
                 files.add(t)
             for ip in (r.get("src_ip"), r.get("dst_ip")):
                 if is_external(ip):
                     ext.add(ip)
-    return {"users": sorted(users), "hosts": sorted(hosts), "files_and_shares": sorted(files)[:200],
-            "external_ips": sorted(ext)}
+    # firewalls / VPN gateways are protected (restrict admin access, review config), never isolated
+    infra = sorted(h for h in hosts if h in devices or is_network_device(h))
+    return {"users": sorted(users), "hosts": sorted(hosts), "infrastructure": infra,
+            "files_and_shares": sorted(files)[:200], "external_ips": sorted(ext)}
 
 
 def excluded_lookalikes(inc_nodes: set[str], all_nodes: dict[str, Node], steps: list[dict],

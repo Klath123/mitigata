@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 
+from .lines import bounded_lines
+
 TS_RX = (r"\d{4}-\d\d-\d\d[T ]\d\d:\d\d:\d\d(?:[.,]\d+)?(?:Z|[+-]\d\d:?\d\d)?"
          r"|[A-Z][a-z]{2}\s+\d{1,2}\s\d\d:\d\d:\d\d")
 IP_RX = r"(?:\d{1,3}\.){3}\d{1,3}"
@@ -95,7 +97,9 @@ def discover(path: str, sample_lines: int = 50_000) -> dict:
     n = 0
     examples: dict[int, str] = {}
     with open(path, "rb") as f:
-        for raw in f:
+        for raw, _ in bounded_lines(f):
+            if raw is None:
+                continue
             line = raw.decode("utf-8", "replace").strip()
             if not line:
                 continue

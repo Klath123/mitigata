@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import yaml
 
 from ..schema import FIELD_NAMES, INT_FIELDS
+from .clean import clean as clean_cmdline
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_FIELDS = os.path.join(ROOT, "rules", "mappings", "fields.yaml")
@@ -221,6 +222,17 @@ class Mapper:
     def __init__(self, path: str = DEFAULT_FIELDS):
         with open(path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
+        # auto.yaml: mappings the config agent applied (engine/ingest/suggest.py --auto-apply), after passing the
+        # code checks and the verification agent; fields.yaml entries come first, so a person's choice wins
+        ap = os.path.join(os.path.dirname(path), "auto.yaml")
+        if os.path.exists(ap):
+            with open(ap, encoding="utf-8") as f:
+                auto = yaml.safe_load(f) or {}
+            for a in auto.get("field_aliases") or []:
+                cfg["fields"].setdefault(a["canonical"], [])
+                if a["source_field"] not in cfg["fields"][a["canonical"]]:
+                    cfg["fields"][a["canonical"]] = list(cfg["fields"][a["canonical"]]) + [a["source_field"]]
+            cfg["event_semantics"] = list(cfg.get("event_semantics") or []) + list(auto.get("event_semantics") or [])
         self.leaf: dict[str, list[tuple[str, int]]] = {}
         self.paths: list[tuple[str, str, int]] = []
         for canon, aliases in cfg["fields"].items():
@@ -501,4 +513,6 @@ class Mapper:
                 type_source = "unknown"
         row["event_type"] = et
         row["type_source"] = "unknown" if et == "generic" else type_source
+        if row.get("cmdline"):                    # what string rules match besides the raw text (obfuscation undone)
+            row["cmdline_clean"] = clean_cmdline(row["cmdline"])
         return row, unmapped

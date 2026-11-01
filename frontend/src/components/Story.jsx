@@ -10,7 +10,9 @@ export default function Story({ inc, report, onStep, onEvidence, goto }) {
   const roles = Object.fromEntries((inc.graph?.nodes || []).filter((x) => x.type === "host").map((x) => [x.label, x.role]));
   const hosts = [...new Set([...inc.path, ...inc.steps.map((s) => s.host)])].filter((h) => inc.steps.some((s) => s.host === h));
   const into = (h) => hops.find((x) => x.to === h && !x.external);
-  const summary = (report?.sentences || []).find((s) => s.section === "summary");
+  const sums = (report?.sentences || []).filter((s) => s.section === "summary");
+  const summary = sums.length ? { text: sums.map((s) => s.text).join(" "), citations: [...new Set(sums.flatMap((s) => s.citations))] } : null;
+  const infra = new Set(br_infra(inc));
   const br = inc.blast_radius || {}, c = br.confirmed || {};
   const chains = br.potential?.chains || [];
   const targets = [...new Map(chains.map((x) => [x.target, x])).values()].sort((a, b) => b.criticality - a.criticality);
@@ -24,6 +26,15 @@ export default function Story({ inc, report, onStep, onEvidence, goto }) {
           <button className="cite" onClick={() => onEvidence(summary.citations, "Evidence for the summary")}>{summary.citations.length} logs</button>
         </p>
       )}
+
+      {inc.kb && (
+        <div className="note-line" style={{ marginBottom: 14 }}>
+          Knowledge base incident <b>#{inc.kb.kb_id}</b>: seen in <b>{inc.kb.batches.length}</b> batch{inc.kb.batches.length > 1 ? "es" : ""} (first <b>{inc.kb.created_run}</b>, last updated by <b>{inc.kb.updated_run}</b>)
+          {inc.kb.merged?.length > 0 && <>; absorbed incident{inc.kb.merged.length > 1 ? "s" : ""} #{inc.kb.merged.join(", #")}</>}.
+        </div>
+      )}
+
+      {inc.agent_review && <AgentReview rv={inc.agent_review} onEvidence={onEvidence} />}
 
       <div className="card">
         <div className="card-h"><h3>Attack path</h3><span className="sub">how the attacker moved, in order. Click a step for its log line.</span></div>
@@ -51,7 +62,8 @@ export default function Story({ inc, report, onStep, onEvidence, goto }) {
                   {steps.slice(0, MAX_ROWS).map((s) => (
                     <button key={s.order} className="chain-step" onClick={() => onStep(s.order)} title={`${fmtTime(s.time)} UTC\n${s.summary}`}>
                       <span className="num" style={{ background: tacticColor(s.stage) }}>{s.order}</span>
-                      <span className="chain-step-t"><b>{s.technique_name || s.technique}</b><span>{s.stage} · {hhmm(s.time)}</span></span>
+                      <span className="chain-step-t"><b>{s.technique_name || s.technique}</b><span>{s.stage} · {hhmm(s.time)}</span>
+                        {s.also?.length > 0 && <span className="also" title="the same log line also shows this">+ {s.also.map((a) => `${a.technique_name || a.technique} (${a.stage})`).join(", ")}</span>}</span>
                     </button>
                   ))}
                   {steps.length > MAX_ROWS && <button className="btn sm ghost" onClick={() => goto("kill")}>+{steps.length - MAX_ROWS} more on the kill map</button>}
@@ -65,7 +77,8 @@ export default function Story({ inc, report, onStep, onEvidence, goto }) {
 
       <div className="section-row"><h2>What to do now</h2><button className="btn sm" onClick={() => goto("respond")}>Full response checklist →</button></div>
       <div className="act-grid">
-        <ActCard tone="crit" title="Isolate these machines" items={c.hosts} empty="No hosts confirmed." />
+        <ActCard tone="crit" title="Isolate these machines" items={(c.hosts || []).filter((h) => !infra.has(h))} empty="No machines to isolate." />
+        {infra.size > 0 && <ActCard tone="high" title="Protect these devices (do not isolate)" items={[...infra]} empty="" />}
         <ActCard tone="high" title="Reset these accounts" items={c.users} empty="No accounts confirmed." />
         <ActCard tone="med" title="Block these addresses" items={c.external_ips} empty="No external IPs seen." />
       </div>
@@ -98,6 +111,9 @@ export default function Story({ inc, report, onStep, onEvidence, goto }) {
   );
 }
 
+// firewalls / VPN gateways (engine/cluster/score.py blast_radius): restrict admin access, never isolate
+const br_infra = (inc) => inc.blast_radius?.confirmed?.infrastructure || [];
+
 function Hop({ h, onEvidence }) {
   return (
     <button className="chain-arrow hop" onClick={() => onEvidence([h.evidence], `Logon ${h.from} → ${h.to}`)} title={`Log: ${shortEv(h.evidence)}`}>
@@ -113,6 +129,36 @@ function ActCard({ tone, title, items, empty }) {
     <div className={`act-card ${tone}`}>
       <div className="act-title">{title}</div>
       {items?.length ? <div>{items.map((x) => <span key={x} className="chip outline">{x}</span>)}</div> : <span className="muted small">{empty}</span>}
+    </div>
+  );
+}
+
+const TONE = { high: "crit", medium: "med", low: "low" };
+const VERDICT = { agree: "low", unsure: "med", disagree: "crit" };
+
+// Second opinion from the verification agent (engine/verify_agent.py); code already dropped issues that cite
+// lines outside this incident. Advisory: it never changes the verdict.
+function AgentReview({ rv, onEvidence }) {
+  return (
+    <div className="card">
+      <div className="card-h">
+        <h3>Verification agent</h3>
+        <span className={`chip ${VERDICT[rv.verdict]}`}>{rv.verdict}</span>
+        <span className={`chip ${TONE[rv.false_positive_likelihood]}`}>false positive: {rv.false_positive_likelihood}</span>
+        <span className="sub">{rv.model} · advisory second opinion</span>
+      </div>
+      <p style={{ margin: "4px 0 8px" }}>{rv.summary}</p>
+      {rv.issues.map((i, n) => (
+        <div key={n} className="reach-item">
+          <span className={`crit-dot ${TONE[i.severity]}`} />
+          <div>
+            <b>{i.step ? `Step ${i.step}` : "Incident"} · {i.kind.replace("_", " ")}</b> {i.text}
+            {i.suggested_fix && <div className="small muted">Fix: {i.suggested_fix}</div>}
+            {i.citations.length > 0 && <button className="cite" onClick={() => onEvidence(i.citations, "Evidence for this review point")}>{i.citations.length} logs</button>}
+          </div>
+        </div>
+      ))}
+      {rv.dropped?.length > 0 && <div className="small muted">{rv.dropped.length} point(s) dropped by code: they cited lines outside this incident.</div>}
     </div>
   );
 }

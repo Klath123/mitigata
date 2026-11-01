@@ -4,6 +4,7 @@ import { IncidentList, RightPanel } from "./components/Side.jsx";
 import KillMap from "./components/KillMap.jsx";
 import Timeline from "./components/Timeline.jsx";
 import Story from "./components/Story.jsx";
+import UploadLogs from "./components/UploadLogs.jsx";
 import { AttackGraph, HostHops } from "./components/Graphs.jsx";
 import { LookAhead, BlastRadius, Excluded, Heatmap, StepsTable, Response } from "./components/Panels.jsx";
 import Briefing, { RiskRing } from "./components/Overview.jsx";
@@ -49,6 +50,7 @@ export default function App() {
   const [focus, setFocus] = useState(null);
   const [sel, setSel] = useState(null);
   const [narrOpen, setNarrOpen] = useState(true);
+  const [upload, setUpload] = useState(false);
   useEffect(() => { if (focus) setNarrOpen(true); }, [focus]);
 
   const toggleTheme = () => {
@@ -132,21 +134,23 @@ export default function App() {
   return (
     <div className={`app${briefing ? " is-briefing" : ""}`}>
       <header className="topbar">
-        <button className="brand" onClick={home} aria-label="AttackStory home">
+        <button className="brand" onClick={home} aria-label="Home" title="Home">
           <span className="brand-mark"><svg width="14" height="14" viewBox="0 0 16 16"><path d="M2 12l4-4 3 3 5-6" stroke="#fff" strokeWidth="2.2" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-          AttackStory
         </button>
         {runs?.runs?.length > 1 && (
           <select className="run-pick" value={runs.active} onChange={(e) => switchRun(e.target.value)} aria-label="Results run" title="Results run (finished engine runs under results/)">
             {runs.runs.map((r) => <option key={r.run} value={r.run}>{r.run} · {r.attack_incidents} attack · {r.review_incidents} review</option>)}
           </select>)}
-        {stats && <span className="top-meta">{!(runs?.runs?.length > 1) && <span className="chip outline">{stats.dataset}</span>}{n(p.events)} events · {p.seconds}s · <b className="crit-txt">{c.attack_incidents} attacks</b></span>}
+        {stats && <span className="top-meta">{!(runs?.runs?.length > 1) && <span className="chip outline">{stats.dataset}</span>}{n(p.events)} events · {p.seconds != null && <>{p.seconds}s · </>}<b className="crit-txt">{c.attack_incidents} attack{c.attack_incidents === 1 ? "" : "s"}</b></span>}
         <span className="spacer" />
+        <button className="btn sm" onClick={() => setUpload(true)} title="Send log files to the server and analyse them">⇪ Upload logs</button>
         {timing && !briefing && <span className="chip low" title="Time to open this incident (target under 500 ms)">⚡ {Math.round(timing.ms)} ms</span>}
         <button className="btn ghost" onClick={toggleTheme} aria-label="Toggle theme">{theme === "dark" ? "☀" : "☾"}</button>
       </header>
 
-      {error && <div className="banner" style={{ margin: 16 }}><div><b>Cannot reach the AttackStory API</b>{error}. Start it with <code>python -m engine.api</code> (newest run under results/) or <code>python -m engine.api results/&lt;run&gt;</code>.</div></div>}
+      {error && <div className="banner" style={{ margin: 16 }}><div><b>Cannot reach the API</b>{error}. Start it with <code>python -m engine.api</code> (newest run under results/) or <code>python -m engine.api results/&lt;run&gt;</code>.</div></div>}
+
+      {upload && <UploadLogs onClose={() => setUpload(false)} onDone={(run) => switchRun(run)} />}
 
       {briefing ? (
         <main className="page"><Briefing stats={stats} list={list} onSelect={select} review={review} setReview={setReview} /></main>

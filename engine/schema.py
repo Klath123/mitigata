@@ -37,6 +37,7 @@ EVENT_FIELDS: list[tuple[str, pa.DataType]] = [
     ("parent", pa.string()),
     ("parent_guid", pa.string()),
     ("cmdline", pa.string()),
+    ("cmdline_clean", pa.string()),   # de-obfuscated + decoded cmdline (ingest/clean.py); null = same as cmdline
     ("parent_cmdline", pa.string()),   # Sysmon ParentCommandLine
     ("original_file_name", pa.string()),  # PE OriginalFileName: survives renaming the binary
     ("pe_description", pa.string()),   # PE metadata of the image (Sysmon 1 Description / Company / Product)
